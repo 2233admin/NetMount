@@ -19,7 +19,8 @@
     "tauri-build": "tauri build",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "cli": "bun cli/main.ts"
   },
   "dependencies": {
     "@arco-design/web-react": "^2.63.3",
@@ -31,8 +32,11 @@
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2.10.0",
+    "commander": "^15.0.0",
+    "console-table-printer": "^2.16.1",
     "i18next": "^23.14.0",
     "immer": "^11.1.4",
+    "picocolors": "^1.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-i18next": "^14.1.3",
