@@ -15,7 +15,12 @@ import {
   delFile,
   delDir,
 } from '../src/services/storage/FileManager'
-import { convertStoragePath } from '../src/services/storage/StorageManager'
+import {
+  convertStoragePath,
+  delStorage,
+  getStorageParams,
+  searchStorage,
+} from '../src/services/storage/StorageManager'
 import { reupRcloneVersion } from '../src/controller/versionCheck'
 import {
   addMountStorage,
@@ -82,6 +87,17 @@ function resolveSecret(opts: { pass?: string; passwordStdin?: boolean; passwordE
   if (opts.passwordStdin) return readFileSync(0, 'utf8').trim()
   if (opts.passwordEnv) return process.env[opts.passwordEnv]
   return opts.pass
+}
+
+// Mask secret-looking config values so `storage info` never prints credentials
+// to stdout/logs. rclone stores passwords obscured, but tokens/keys are not.
+const SECRET_KEY = /pass|secret|token|key|credential/i
+function redactParams(params: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(params)) {
+    out[k] = SECRET_KEY.test(k) && v ? '***' : v
+  }
+  return out
 }
 
 // Split an rclone-style "storage:path" arg into its parts. Path defaults to ''.
@@ -194,6 +210,106 @@ addOutputOpts(
     }
     if (mode === 'json') printJson({ added: name, type })
     else ok(`storage "${name}" added (${type})`)
+  }
+)
+
+addOutputOpts(
+  storage.command('info <name>').description('show one storage: type, space, config (secrets masked)')
+).action(async (name: string, opts: CmdOpts) => {
+  const mode = resolveMode(opts)
+  await prep({ storages: true })
+  const s = searchStorage(name)
+  if (!s) fail(EXIT.CONFIG, `No storage named "${name}"`, 'List configured storages with: netmount storage list')
+  let params: Record<string, unknown> = {}
+  try {
+    params = (await getStorageParams(name)) as Record<string, unknown>
+  } catch {
+    // params are best-effort; the summary below still works without them
+  }
+  const safe = redactParams(params)
+  if (mode === 'json') {
+    printJson({
+      name: s.name,
+      type: s.type,
+      framework: s.framework,
+      space: s.space,
+      parameters: safe,
+    })
+    return
+  }
+  info(`name:      ${s.name}`)
+  info(`framework: ${s.framework}`)
+  info(`type:      ${s.type}`)
+  info(`used:      ${fmtBytes(s.space?.used)}`)
+  info(`total:     ${fmtBytes(s.space?.total)}`)
+  info(`free:      ${fmtBytes(s.space?.free)}`)
+  for (const [k, v] of Object.entries(safe)) info(`  ${k}: ${String(v)}`)
+})
+
+addOutputOpts(
+  storage.command('del <name>').alias('rm').description('delete a storage (also unmounts and clears its cache)')
+).action(async (name: string, opts: CmdOpts) => {
+  const mode = resolveMode(opts)
+  await prep({ storages: true })
+  if (!searchStorage(name)) {
+    fail(EXIT.CONFIG, `No storage named "${name}"`, 'List configured storages with: netmount storage list')
+  }
+  await delStorage(name)
+  if (mode === 'json') printJson({ deleted: name })
+  else ok(`storage "${name}" deleted`)
+})
+
+addOutputOpts(
+  storage
+    .command('edit <name>')
+    .description('update an rclone storage’s params (merge; unspecified keys kept)')
+    .option('--url <url>', 'endpoint URL')
+    .option('--vendor <vendor>', 'provider vendor')
+    .option('--user <user>', 'username')
+    .option('--pass <pass>', 'password (prefer --password-stdin to keep it out of shell history)')
+    .option('--password-stdin', 'read password from stdin')
+    .option('--password-env <var>', 'read password from the named env var')
+).action(
+  async (
+    name: string,
+    opts: CmdOpts & {
+      url?: string
+      vendor?: string
+      user?: string
+      pass?: string
+      passwordStdin?: boolean
+      passwordEnv?: string
+    }
+  ) => {
+    const mode = resolveMode(opts)
+    await prep({ storages: true })
+    const s = searchStorage(name)
+    if (!s) fail(EXIT.CONFIG, `No storage named "${name}"`, 'List configured storages with: netmount storage list')
+    if (s.framework !== 'rclone') {
+      fail(EXIT.USAGE, `edit only supports rclone storages (${name} is ${s.framework})`, 'Re-create it with: netmount storage del + storage add')
+    }
+    const pass = resolveSecret(opts)
+    const parameters: Record<string, string> = {}
+    if (opts.url) parameters.url = opts.url
+    if (opts.vendor) parameters.vendor = opts.vendor
+    if (opts.user) parameters.user = opts.user
+    if (pass) parameters.pass = pass
+    if (Object.keys(parameters).length === 0) {
+      fail(EXIT.USAGE, 'nothing to edit', 'Pass at least one of --url/--vendor/--user/--pass')
+    }
+    // /config/update merges params into the existing remote (vs /config/create
+    // which replaces it). obscure hashes any password we send.
+    const res = await rclone_api_post('/config/update', {
+      name,
+      parameters,
+      opt: { obscure: true },
+    })
+    if (res === undefined) {
+      fail(EXIT.CONFIG, `Failed to update storage "${name}"`)
+    }
+    await reupStorage()
+    if (mode === 'json') printJson({ updated: name, keys: Object.keys(parameters) })
+    else ok(`storage "${name}" updated (${Object.keys(parameters).join(', ')})`)
   }
 )
 
@@ -413,6 +529,37 @@ addOutputOpts(
   })
   if (mode === 'json') printJson({ downloaded: `${storage}:${path}`, to: localFs(resolve(absDir, name)) })
   else ok(`downloaded ${storage}:${path} -> ${resolve(absDir, name)}`)
+})
+
+// ---- mounts ----
+const mounts = program.command('mounts').description('inspect active mounts')
+
+// RC /mount/listmounts returns PascalCase item keys (Fs/MountPoint/MountedOn).
+// The shared MountService type guard expects camelCase and so always drops real
+// mounts — the GUI sidesteps it via its locally-tracked mount config. Rather than
+// patch upstream, read RC directly here, same as the cp/mv path-join workaround.
+type RcMountPoint = { Fs: string; MountPoint: string; MountedOn: string }
+addOutputOpts(
+  mounts.command('list').alias('ls').description('list active mount points')
+).action(async (opts: CmdOpts) => {
+  const mode = resolveMode(opts)
+  await prep()
+  const res = (await rclone_api_post('/mount/listmounts')) as { mountPoints?: RcMountPoint[] } | undefined
+  const list = res?.mountPoints ?? []
+  if (mode === 'json') {
+    printJson(
+      list.map(m => ({ storage: m.Fs, mountPoint: m.MountPoint, mountedOn: m.MountedOn }))
+    )
+    return
+  }
+  if (mode === 'plain') {
+    for (const m of list) process.stdout.write(`${m.Fs}\t${m.MountPoint}\n`)
+    return
+  }
+  printTable(
+    list.map(m => ({ STORAGE: m.Fs, MOUNTPOINT: m.MountPoint, MOUNTED: m.MountedOn })),
+    'No active mounts. Mount one with: netmount mount <storage> <mountpoint>'
+  )
 })
 
 // ---- daemon ----
