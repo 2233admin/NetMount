@@ -181,42 +181,82 @@ addOutputOpts(storage.command('list').alias('ls').description('list configured s
   }
 )
 
+// Map CLI flags to the rclone config keys each backend expects. The shared
+// secret channel (--pass/--password-stdin/--password-env) lands on the right
+// key per type: webdav/smb -> `pass` (IsPassword, rclone obscures it), s3 ->
+// `secret_access_key` (not IsPassword, stored plaintext, obscure leaves it).
+function buildStorageParams(
+  type: string,
+  opts: {
+    url?: string; vendor?: string; user?: string
+    provider?: string; accessKey?: string; endpoint?: string; region?: string
+    host?: string; domain?: string; port?: string
+  },
+  secret?: string
+): Record<string, string> {
+  const p: Record<string, string> = {}
+  const set = (k: string, v?: string) => { if (v) p[k] = v }
+  switch (type) {
+    case 's3':
+      set('provider', opts.provider ?? 'Other')
+      set('access_key_id', opts.accessKey)
+      if (secret) p.secret_access_key = secret
+      set('endpoint', opts.endpoint ?? opts.url)
+      set('region', opts.region)
+      break
+    case 'smb':
+      set('host', opts.host ?? opts.url)
+      set('user', opts.user)
+      if (secret) p.pass = secret
+      set('domain', opts.domain)
+      set('port', opts.port)
+      break
+    default: // webdav and other url-shaped backends
+      set('url', opts.url)
+      set('vendor', opts.vendor)
+      set('user', opts.user)
+      if (secret) p.pass = secret
+  }
+  return p
+}
+
 addOutputOpts(
   storage
     .command('add <type> <name>')
-    .description('add a cloud storage (e.g. webdav, s3)')
-    .option('--url <url>', 'endpoint URL (webdav/s3/...)')
-    .option('--vendor <vendor>', 'provider vendor (webdav: other|nextcloud|owncloud|...)', 'other')
-    .option('--user <user>', 'username')
-    .option('--pass <pass>', 'password (prefer --password-stdin to keep it out of shell history)')
-    .option('--password-stdin', 'read password from stdin')
-    .option('--password-env <var>', 'read password from the named env var')
+    .description('add a cloud storage (webdav, s3, smb)')
+    .option('--url <url>', 'webdav endpoint URL (also accepted as s3 endpoint / smb host)')
+    .option('--vendor <vendor>', 'webdav vendor (other|nextcloud|owncloud|...)', 'other')
+    .option('--user <user>', 'username (webdav/smb)')
+    .option('--provider <provider>', 's3 provider (AWS|Minio|Aliyun|Cloudflare|Other)')
+    .option('--access-key <id>', 's3 access key id')
+    .option('--endpoint <url>', 's3 endpoint (S3-compatible / non-AWS)')
+    .option('--region <region>', 's3 region')
+    .option('--host <host>', 'smb host')
+    .option('--domain <domain>', 'smb domain')
+    .option('--port <port>', 'smb/s3 port')
+    .option('--pass <secret>', 'password / s3 secret-access-key (prefer --password-stdin)')
+    .option('--password-stdin', 'read the secret from stdin')
+    .option('--password-env <var>', 'read the secret from the named env var')
 ).action(
   async (
     type: string,
     name: string,
     opts: CmdOpts & {
-      url?: string
-      vendor?: string
-      user?: string
-      pass?: string
-      passwordStdin?: boolean
-      passwordEnv?: string
+      url?: string; vendor?: string; user?: string
+      provider?: string; accessKey?: string; endpoint?: string; region?: string
+      host?: string; domain?: string; port?: string
+      pass?: string; passwordStdin?: boolean; passwordEnv?: string
     }
   ) => {
     const mode = resolveMode(opts)
     await prep({ catalog: true })
 
-    const pass = resolveSecret(opts)
-    const parameters: Record<string, string> = {}
-    if (opts.url) parameters.url = opts.url
-    if (opts.vendor) parameters.vendor = opts.vendor
-    if (opts.user) parameters.user = opts.user
-    if (pass) parameters.pass = pass
+    const secret = resolveSecret(opts)
+    const parameters = buildStorageParams(type, opts, secret)
 
     const created = await createStorage(name, type, parameters, {}, { obscure: true })
     if (!created) {
-      fail(EXIT.CONFIG, `Failed to add storage "${name}" (type ${type})`, 'Check the URL/credentials and that the type is supported.')
+      fail(EXIT.CONFIG, `Failed to add storage "${name}" (type ${type})`, 'Check the endpoint/credentials and that the type is supported (rclone backend name).')
     }
     if (mode === 'json') printJson({ added: name, type })
     else ok(`storage "${name}" added (${type})`)

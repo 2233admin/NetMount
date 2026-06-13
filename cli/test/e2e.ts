@@ -19,6 +19,9 @@ const RCLONE = process.env.NETMOUNT_RCLONE_BIN || 'rclone'
 const WEBDAV_PORT = 8791
 const WEBDAV_USER = 'demo'
 const WEBDAV_PASS = 'demopw' // throwaway fixture credential, not a real secret
+const S3_PORT = 8792
+const S3_AK = 'e2eaccesskey' // throwaway fixture credential, not a real secret
+const S3_SK = 'e2esecretkey0123456789' // throwaway fixture credential, not a real secret
 
 // ---- tiny assert harness -------------------------------------------------
 let pass = 0
@@ -39,8 +42,11 @@ function check(name: string, cond: boolean, detail = ''): void {
 const HOME = mkdtempSync(join(tmpdir(), 'netmount-e2e-'))
 const BACKEND = join(HOME, 'cloud') // what the fake webdav serves
 const SRC = join(HOME, 'src') // local files to upload
+const S3_ROOT = join(HOME, 's3') // what the fake s3 serves; top-level dirs = buckets
+const S3_BUCKET = join(S3_ROOT, 'databucket')
 mkdirSync(BACKEND, { recursive: true })
 mkdirSync(SRC, { recursive: true })
+mkdirSync(S3_BUCKET, { recursive: true })
 
 // Children inherit an isolated home so the CLI writes to <HOME>/.netmount.
 const childEnv = {
@@ -79,12 +85,18 @@ async function rc(path: string, body: unknown): Promise<Response> {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-// ---- fixture: rclone serve webdav ----------------------------------------
+// ---- fixtures: rclone serve webdav + serve s3 ----------------------------
 let serve: ChildProcess | undefined
+let serveS3: ChildProcess | undefined
 function startFakeCloud(): void {
   serve = spawn(
     RCLONE,
     ['serve', 'webdav', '--addr', `127.0.0.1:${WEBDAV_PORT}`, '--user', WEBDAV_USER, '--pass', WEBDAV_PASS, BACKEND],
+    { stdio: 'ignore' }
+  )
+  serveS3 = spawn(
+    RCLONE,
+    ['serve', 's3', '--addr', `127.0.0.1:${S3_PORT}`, '--auth-key', `${S3_AK},${S3_SK}`, S3_ROOT],
     { stdio: 'ignore' }
   )
 }
@@ -93,10 +105,12 @@ function teardown(): void {
   try {
     run(['daemon', 'stop'])
   } catch {}
-  if (serve && serve.pid) {
-    try {
-      process.kill(serve.pid)
-    } catch {}
+  for (const p of [serve, serveS3]) {
+    if (p && p.pid) {
+      try {
+        process.kill(p.pid)
+      } catch {}
+    }
   }
   try {
     rmSync(HOME, { recursive: true, force: true })
@@ -143,6 +157,31 @@ async function main(): Promise<void> {
     check('storage info masks the password', info.stdout.includes('***'))
     check('storage info never leaks plaintext pass', !info.stdout.includes(WEBDAV_PASS))
     check('storage info shows the url', info.stdout.includes(`127.0.0.1:${WEBDAV_PORT}`))
+  }
+
+  process.stdout.write('\n== storage add s3 (per-backend params + masking + roundtrip) ==\n')
+  {
+    const add = run(
+      ['storage', 'add', 's3', 's3fc', '--provider', 'Other', '--endpoint', `http://127.0.0.1:${S3_PORT}`, '--access-key', S3_AK, '--password-stdin'],
+      { input: S3_SK }
+    )
+    check('s3 add exit 0', add.code === 0, add.stderr.trim())
+    const info = run(['storage', 'info', 's3fc', '--json'])
+    check('s3 info exit 0', info.code === 0, info.stderr.trim())
+    check('s3 info maps endpoint (not url)', info.stdout.includes(`127.0.0.1:${S3_PORT}`))
+    check('s3 info never leaks the secret key', !info.stdout.includes(S3_SK))
+    check('s3 info masks the secret_access_key', /"secret_access_key":\s*"\*\*\*"/.test(info.stdout))
+    // upload into a bucket and confirm the object lands in the served dir — proves
+    // access_key_id + secret_access_key are actually stored and used, not just saved.
+    const payload = 's3 roundtrip payload\n'
+    writeFileSync(join(SRC, 's3up.txt'), payload)
+    const up = run(['upload', join(SRC, 's3up.txt'), 's3fc:databucket'])
+    check('s3 upload exit 0', up.code === 0, up.stderr.trim())
+    check('s3 object landed in bucket', existsSync(join(S3_BUCKET, 's3up.txt')))
+    if (existsSync(join(S3_BUCKET, 's3up.txt'))) {
+      check('s3 uploaded bytes match', readFileSync(join(S3_BUCKET, 's3up.txt'), 'utf8') === payload)
+    }
+    run(['storage', 'del', 's3fc'])
   }
 
   process.stdout.write('\n== storage edit (merge, not replace) ==\n')
