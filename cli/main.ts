@@ -3,8 +3,9 @@ import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname, basename } from 'node:path'
 import { Command } from 'commander'
 import { rclone_api_post } from '../src/utils/rclone/request'
-import { setRuntime } from '../src/runtime/port'
+import { setRuntime, getRuntime } from '../src/runtime/port'
 import { nodeRuntime } from '../src/runtime/node'
+import { configService } from '../src/services/ConfigService'
 import { reupStorage } from '../src/services/storage/StorageManager'
 import { useStorageStore } from '../src/stores/storageStore'
 import { createStorage } from '../src/controller/storage/create'
@@ -37,6 +38,7 @@ import {
   daemonStatus,
   stopDaemon,
   DaemonError,
+  nmPaths,
   type DaemonState,
 } from './daemon'
 import {
@@ -89,15 +91,21 @@ function resolveSecret(opts: { pass?: string; passwordStdin?: boolean; passwordE
   return opts.pass
 }
 
-// Mask secret-looking config values so `storage info` never prints credentials
-// to stdout/logs. rclone stores passwords obscured, but tokens/keys are not.
+// Mask secret-looking config values so `storage info`/`config show` never print
+// credentials to stdout/logs. Recurses so nested config (framework.rclone.password,
+// settings.proxy.password) is masked too. rclone stores passwords obscured, but
+// tokens/keys are not, and the app config keeps proxy creds in cleartext in memory.
 const SECRET_KEY = /pass|secret|token|key|credential/i
-function redactParams(params: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(params)) {
-    out[k] = SECRET_KEY.test(k) && v ? '***' : v
+function redactParams(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactParams)
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = SECRET_KEY.test(k) && v ? '***' : redactParams(v)
+    }
+    return out
   }
-  return out
+  return value
 }
 
 // Split an rclone-style "storage:path" arg into its parts. Path defaults to ''.
@@ -226,7 +234,7 @@ addOutputOpts(
   } catch {
     // params are best-effort; the summary below still works without them
   }
-  const safe = redactParams(params)
+  const safe = redactParams(params) as Record<string, unknown>
   if (mode === 'json') {
     printJson({
       name: s.name,
@@ -598,6 +606,113 @@ addOutputOpts(daemon.command('stop').description('stop the rclone daemon')).acti
     else info('daemon was not running')
   }
 )
+
+addOutputOpts(daemon.command('restart').description('stop then start the rclone daemon')).action(
+  async (opts: CmdOpts) => {
+    const mode = resolveMode(opts)
+    await stopDaemon()
+    const state = await prep()
+    if (mode === 'json') printJson({ pid: state.pid, url: state.url, port: state.port })
+    else ok(`daemon restarted (pid ${state.pid}) at ${state.url}`)
+  }
+)
+
+// ---- config ----
+const config = program.command('config').description('inspect CLI config and run health checks')
+
+addOutputOpts(config.command('path').description('show where the CLI keeps its state')).action(
+  (opts: CmdOpts) => {
+    const mode = resolveMode(opts)
+    if (mode === 'json') {
+      printJson(nmPaths)
+      return
+    }
+    info(`dir:          ${nmPaths.dir}`)
+    info(`app config:   ${nmPaths.appConfig}`)
+    info(`daemon state: ${nmPaths.daemonState}`)
+    info(`rclone conf:  ${nmPaths.rcloneConf}`)
+    info(`rclone log:   ${nmPaths.rcloneLog}`)
+  }
+)
+
+addOutputOpts(
+  config.command('show').description('print app config (NMConfig) with secrets masked')
+).action(async (opts: CmdOpts) => {
+  resolveMode(opts) // config is nested; always emit JSON to stdout
+  await configService.loadConfig()
+  printJson(redactParams(configService.getConfig()))
+})
+
+addOutputOpts(
+  config.command('doctor').description('health-check the CLI environment')
+).action(async (opts: CmdOpts) => {
+  const mode = resolveMode(opts)
+  const checks: { check: string; status: 'PASS' | 'WARN' | 'FAIL'; detail: string }[] = []
+
+  checks.push({
+    check: 'state dir',
+    status: existsSync(nmPaths.dir) ? 'PASS' : 'WARN',
+    detail: existsSync(nmPaths.dir) ? nmPaths.dir : `${nmPaths.dir} (created on first use)`,
+  })
+
+  checks.push({
+    check: 'app config',
+    status: existsSync(nmPaths.appConfig) ? 'PASS' : 'WARN',
+    detail: existsSync(nmPaths.appConfig) ? nmPaths.appConfig : 'none yet (defaults in use)',
+  })
+
+  const bin = process.env.NETMOUNT_RCLONE_BIN
+  if (bin) {
+    checks.push({
+      check: 'rclone binary',
+      status: existsSync(bin) ? 'PASS' : 'FAIL',
+      detail: existsSync(bin) ? bin : `NETMOUNT_RCLONE_BIN points at a missing file: ${bin}`,
+    })
+  } else {
+    checks.push({
+      check: 'rclone binary',
+      status: 'WARN',
+      detail: 'NETMOUNT_RCLONE_BIN unset — relying on rclone being on PATH',
+    })
+  }
+
+  const { running, state } = await daemonStatus()
+  checks.push({
+    check: 'daemon',
+    status: running ? 'PASS' : 'WARN',
+    detail: running ? `running at ${state?.url}` : 'not running (auto-starts on first command)',
+  })
+  // Security: the rc must never be reachable off-host. The daemon binds
+  // 127.0.0.1 by construction; flag loudly if state ever shows otherwise.
+  if (state?.url) {
+    const local = state.url.includes('127.0.0.1') || state.url.includes('[::1]')
+    checks.push({
+      check: 'rc bind',
+      status: local ? 'PASS' : 'FAIL',
+      detail: local ? 'bound to localhost' : `EXPOSED: ${state.url}`,
+    })
+  }
+
+  if (process.platform === 'win32') {
+    const winfsp = await getRuntime().system.getWinFspInstallState()
+    checks.push({
+      check: 'WinFsp',
+      status: winfsp ? 'PASS' : 'WARN',
+      detail: winfsp ? 'installed' : 'not found — mounting will fail until installed',
+    })
+  }
+
+  const failed = checks.some(c => c.status === 'FAIL')
+  if (mode === 'json') {
+    printJson(checks)
+  } else {
+    printTable(
+      checks.map(c => ({ CHECK: c.check, STATUS: c.status, DETAIL: c.detail })),
+      'no checks ran'
+    )
+  }
+  if (failed) process.exit(EXIT.CONFIG)
+})
 
 program.parseAsync(process.argv).catch((e: unknown) => {
   fail(EXIT.GENERAL, (e as Error).message ?? String(e))

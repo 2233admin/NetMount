@@ -17,6 +17,16 @@ const STATE_FILE = join(NM_DIR, 'daemon.json')
 const CONFIG_FILE = join(NM_DIR, 'rclone.conf')
 const LOG_FILE = join(NM_DIR, 'rclone.log')
 
+// Where the CLI keeps its state. config.json is the NMConfig app settings
+// (written by the node runtime's configIO); the rest are daemon-owned.
+export const nmPaths = {
+  dir: NM_DIR,
+  appConfig: join(NM_DIR, 'config.json'),
+  daemonState: STATE_FILE,
+  rcloneConf: CONFIG_FILE,
+  rcloneLog: LOG_FILE,
+} as const
+
 export interface DaemonState {
   pid: number
   url: string
