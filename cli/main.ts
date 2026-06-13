@@ -23,6 +23,8 @@ import {
   searchStorage,
 } from '../src/services/storage/StorageManager'
 import { reupRcloneVersion } from '../src/controller/versionCheck'
+import { reupStats } from '../src/controller/stats/stats'
+import { rcloneInfo } from '../src/services/rclone'
 import {
   addMountStorage,
   mountStorage,
@@ -713,6 +715,110 @@ addOutputOpts(
   }
   if (failed) process.exit(EXIT.CONFIG)
 })
+
+// ---- task ----------------------------------------------------------------
+// Saved scheduled transfer tasks live in NMConfig.task[]. The scheduler loop
+// runs in the GUI process; the CLI does NOT run schedulers, so this group is
+// read-only reporting of what the GUI has saved. Listing/inspecting only.
+const task = program.command('task').description('inspect saved scheduled tasks (read-only; scheduler runs in the GUI)')
+
+function loc(end: { storageName: string; path: string }): string {
+  return `${end.storageName}:${end.path}`
+}
+
+addOutputOpts(task.command('list').alias('ls').description('list saved tasks')).action(
+  async (opts: CmdOpts) => {
+    const mode = resolveMode(opts)
+    await configService.loadConfig()
+    const tasks = configService.getConfig().task ?? []
+    if (mode === 'json') {
+      printJson(
+        tasks.map(t => ({
+          name: t.name,
+          type: t.taskType,
+          source: loc(t.source),
+          target: loc(t.target),
+          enable: t.enable,
+          mode: t.run?.mode,
+          lastError: t.runInfo?.error || t.runInfo?.msg || null,
+        }))
+      )
+      return
+    }
+    printTable(
+      tasks.map(t => ({
+        NAME: t.name,
+        TYPE: t.taskType,
+        SOURCE: loc(t.source),
+        TARGET: loc(t.target),
+        ENABLE: t.enable ? 'yes' : 'no',
+        MODE: t.run?.mode ?? '-',
+        LASTERR: t.runInfo?.error || t.runInfo?.msg || '-',
+      })),
+      'no saved tasks'
+    )
+  }
+)
+
+addOutputOpts(task.command('status <name>').description('show one saved task in detail')).action(
+  async (name: string, opts: CmdOpts) => {
+    resolveMode(opts)
+    await configService.loadConfig()
+    const t = (configService.getConfig().task ?? []).find(x => x.name === name)
+    if (!t) fail(EXIT.USAGE, `no saved task named "${name}"`, 'run `netmount task list` to see saved tasks')
+    printJson({
+      name: t.name,
+      type: t.taskType,
+      source: loc(t.source),
+      target: loc(t.target),
+      enable: t.enable,
+      run: t.run,
+      runInfo: t.runInfo,
+      parameters: t.parameters ?? null,
+    })
+  }
+)
+
+// ---- stats ---------------------------------------------------------------
+// Live transfer stats from the daemon's /core/stats, via the shared controller.
+addOutputOpts(program.command('stats').description('show live rclone transfer stats')).action(
+  async (opts: CmdOpts) => {
+    const mode = resolveMode(opts)
+    await prep()
+    await reupStats()
+    const s = rcloneInfo.stats
+    if (mode === 'json') {
+      printJson(s ?? {})
+      return
+    }
+    if (!s) {
+      info('no stats available')
+      return
+    }
+    info(`bytes:        ${fmtBytes(s.bytes)} / ${fmtBytes(s.totalBytes)}`)
+    // realSpeed = live throughput of in-flight transfers (what the GUI shows);
+    // speed = rclone's session-average. Show both so the live number isn't lost.
+    info(`speed:        ${fmtBytes(s.realSpeed ?? 0)}/s (live), ${fmtBytes(s.speed)}/s (avg)`)
+    info(`transfers:    ${s.totalTransfers ?? 0}`)
+    info(`checks:       ${s.checks ?? 0} / ${s.totalChecks ?? 0}`)
+    info(`errors:       ${s.errors ?? 0}`)
+    info(`elapsed:      ${(s.elapsedTime ?? 0).toFixed(1)}s`)
+    const active = s.transferring ?? []
+    if (active.length === 0) {
+      info('transferring: (idle)')
+    } else {
+      printTable(
+        active.map(t => ({
+          NAME: t.name,
+          PROGRESS: `${(t.percentage ?? 0).toFixed(0)}%`,
+          SIZE: `${fmtBytes(t.bytes)} / ${fmtBytes(t.size)}`,
+          SPEED: `${fmtBytes(t.speed)}/s`,
+        })),
+        'no active transfers'
+      )
+    }
+  }
+)
 
 program.parseAsync(process.argv).catch((e: unknown) => {
   fail(EXIT.GENERAL, (e as Error).message ?? String(e))
