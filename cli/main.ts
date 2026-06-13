@@ -181,18 +181,38 @@ addOutputOpts(storage.command('list').alias('ls').description('list configured s
   }
 )
 
+// Collect a repeatable --option key=value into an array (commander reducer).
+const collect = (v: string, acc: string[]): string[] => {
+  acc.push(v)
+  return acc
+}
+
+// Read an OAuth token JSON from --token, --token-stdin, or an env var. The token
+// is what `rclone authorize <type>` prints on a machine that HAS a browser; you
+// paste it here so a headless box can use the backend without an interactive flow.
+function resolveToken(opts: { token?: string; tokenStdin?: boolean; tokenEnv?: string }): string | undefined {
+  if (opts.tokenStdin) return readFileSync(0, 'utf8').trim()
+  if (opts.tokenEnv) return process.env[opts.tokenEnv]
+  return opts.token
+}
+
 // Map CLI flags to the rclone config keys each backend expects. The shared
 // secret channel (--pass/--password-stdin/--password-env) lands on the right
 // key per type: webdav/smb -> `pass` (IsPassword, rclone obscures it), s3 ->
 // `secret_access_key` (not IsPassword, stored plaintext, obscure leaves it).
+// `--option key=value` is a generic passthrough so ALL 70+ rclone backends are
+// configurable without a per-backend flag; OAuth backends take a pre-fetched
+// token JSON + optional custom client app.
 function buildStorageParams(
   type: string,
   opts: {
     url?: string; vendor?: string; user?: string
     provider?: string; accessKey?: string; endpoint?: string; region?: string
     host?: string; domain?: string; port?: string
+    clientId?: string; clientSecret?: string; option?: string[]
   },
-  secret?: string
+  secret?: string,
+  token?: string
 ): Record<string, string> {
   const p: Record<string, string> = {}
   const set = (k: string, v?: string) => { if (v) p[k] = v }
@@ -217,13 +237,23 @@ function buildStorageParams(
       set('user', opts.user)
       if (secret) p.pass = secret
   }
+  // OAuth backends (drive/onedrive/box/dropbox/pcloud/yandex/...) — pre-fetched
+  // token + optional custom client app.
+  set('client_id', opts.clientId)
+  set('client_secret', opts.clientSecret)
+  if (token) p.token = token
+  // Generic passthrough last, so an explicit --option overrides anything above.
+  for (const kv of opts.option ?? []) {
+    const i = kv.indexOf('=')
+    if (i > 0) p[kv.slice(0, i)] = kv.slice(i + 1)
+  }
   return p
 }
 
 addOutputOpts(
   storage
     .command('add <type> <name>')
-    .description('add a cloud storage (webdav, s3, smb)')
+    .description('add a cloud storage — type is any rclone backend (run: storage providers)')
     .option('--url <url>', 'webdav endpoint URL (also accepted as s3 endpoint / smb host)')
     .option('--vendor <vendor>', 'webdav vendor (other|nextcloud|owncloud|...)', 'other')
     .option('--user <user>', 'username (webdav/smb)')
@@ -237,6 +267,12 @@ addOutputOpts(
     .option('--pass <secret>', 'password / s3 secret-access-key (prefer --password-stdin)')
     .option('--password-stdin', 'read the secret from stdin')
     .option('--password-env <var>', 'read the secret from the named env var')
+    .option('--token <json>', 'OAuth token JSON from `rclone authorize <type>` (prefer --token-stdin)')
+    .option('--token-stdin', 'read the OAuth token JSON from stdin')
+    .option('--token-env <var>', 'read the OAuth token JSON from the named env var')
+    .option('--client-id <id>', 'OAuth custom client id (optional)')
+    .option('--client-secret <secret>', 'OAuth custom client secret (optional)')
+    .option('--option <key=value>', 'set any raw rclone backend param (repeatable) — escape hatch for all backends', collect, [])
 ).action(
   async (
     type: string,
@@ -246,22 +282,70 @@ addOutputOpts(
       provider?: string; accessKey?: string; endpoint?: string; region?: string
       host?: string; domain?: string; port?: string
       pass?: string; passwordStdin?: boolean; passwordEnv?: string
+      token?: string; tokenStdin?: boolean; tokenEnv?: string
+      clientId?: string; clientSecret?: string; option?: string[]
     }
   ) => {
     const mode = resolveMode(opts)
     await prep({ catalog: true })
 
     const secret = resolveSecret(opts)
-    const parameters = buildStorageParams(type, opts, secret)
+    const token = resolveToken(opts)
+    const parameters = buildStorageParams(type, opts, secret, token)
 
     const created = await createStorage(name, type, parameters, {}, { obscure: true })
     if (!created) {
-      fail(EXIT.CONFIG, `Failed to add storage "${name}" (type ${type})`, 'Check the endpoint/credentials and that the type is supported (rclone backend name).')
+      fail(EXIT.CONFIG, `Failed to add storage "${name}" (type ${type})`, 'Check the credentials and that the type is a valid rclone backend (run: netmount storage providers).')
     }
     if (mode === 'json') printJson({ added: name, type })
     else ok(`storage "${name}" added (${type})`)
   }
 )
+
+// `storage providers` — discovery: list every rclone backend type, or show one
+// type's config fields (name/required/secret) so you know what a given cloud disk
+// needs without trial-and-error. Reads rclone RC /config/providers (static).
+type ProviderOption = { Name: string; Help?: string; Required?: boolean; IsPassword?: boolean; Advanced?: boolean }
+type Provider = { Name: string; Description?: string; Options?: ProviderOption[] }
+addOutputOpts(
+  storage
+    .command('providers [type]')
+    .alias('types')
+    .description("list rclone backend types, or show one type's config options")
+).action(async (type: string | undefined, opts: CmdOpts) => {
+  const mode = resolveMode(opts)
+  await prep()
+  const res = (await rclone_api_post('/config/providers')) as { providers?: Provider[] } | undefined
+  const provs = res?.providers ?? []
+  if (!type) {
+    if (mode === 'json') {
+      printJson(provs.map(p => ({ type: p.Name, description: p.Description })))
+      return
+    }
+    printTable(
+      provs.map(p => ({ TYPE: p.Name, DESCRIPTION: (p.Description ?? '').slice(0, 60) })),
+      'No providers reported by rclone.'
+    )
+    return
+  }
+  const prov = provs.find(p => p.Name === type)
+  if (!prov) return fail(EXIT.USAGE, `unknown backend type "${type}"`, 'Run: netmount storage providers (to list all types)')
+  if (mode === 'json') {
+    printJson(prov.Options ?? [])
+    return
+  }
+  printTable(
+    (prov.Options ?? [])
+      .filter(o => !o.Advanced)
+      .map(o => ({
+        OPTION: o.Name,
+        REQUIRED: o.Required ? 'yes' : '',
+        SECRET: o.IsPassword ? 'yes' : '',
+        HELP: ((o.Help ?? '').split('\n')[0] ?? '').slice(0, 56),
+      })),
+    `${type} reports no basic options.`
+  )
+})
 
 addOutputOpts(
   storage.command('info <name>').description('show one storage: type, space, config (secrets masked)')

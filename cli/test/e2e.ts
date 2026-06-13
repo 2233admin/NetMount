@@ -184,6 +184,61 @@ async function main(): Promise<void> {
     run(['storage', 'del', 's3fc'])
   }
 
+  process.stdout.write('\n== storage providers (backend discovery) ==\n')
+  {
+    const all = run(['storage', 'providers', '--json'])
+    check('providers list exit 0', all.code === 0, all.stderr.trim())
+    let types: string[] = []
+    try {
+      types = (JSON.parse(all.stdout) as { type: string }[]).map(p => p.type)
+    } catch {}
+    check('providers list is non-empty', types.length > 10, `got ${types.length}`)
+    check('providers list includes s3/webdav/drive', ['s3', 'webdav', 'drive'].every(t => types.includes(t)))
+    const one = run(['storage', 'providers', 's3', '--json'])
+    check('providers <type> exit 0', one.code === 0, one.stderr.trim())
+    check('s3 provider lists access_key_id option', one.stdout.includes('access_key_id'))
+    const bad = run(['storage', 'providers', 'no-such-backend'])
+    check('providers unknown type -> exit 2', bad.code === 2)
+  }
+
+  process.stdout.write('\n== storage add via --option escape hatch ==\n')
+  {
+    // configure an s3 backend entirely through generic --option key=value, no
+    // per-backend flags — proves any rclone param is reachable for any backend.
+    const add = run([
+      'storage', 'add', 's3', 's3opt',
+      '--option', 'provider=Other',
+      '--option', `endpoint=http://127.0.0.1:${S3_PORT}`,
+      '--option', `access_key_id=${S3_AK}`,
+      '--option', `secret_access_key=${S3_SK}`,
+    ])
+    check('storage add --option exit 0', add.code === 0, add.stderr.trim())
+    const info = run(['storage', 'info', 's3opt', '--json'])
+    check('--option set the endpoint', info.stdout.includes(`127.0.0.1:${S3_PORT}`))
+    check('--option set the provider', info.stdout.includes('Other'))
+    check('--option secret still masked', !info.stdout.includes(S3_SK))
+    run(['storage', 'del', 's3opt'])
+  }
+
+  process.stdout.write('\n== OAuth token passing (--token-stdin: stored + masked) ==\n')
+  {
+    // OAuth backends (drive/onedrive/box/...) take a pre-fetched token JSON from
+    // `rclone authorize <type>`; the CLI passes it through --token-stdin. We can't
+    // exercise a real OAuth backend offline (drive validates the token against
+    // Google's endpoint and would hang the suite on a fake one), so we verify the
+    // *plumbing* on webdav: resolveToken -> buildStorageParams sets `token` ->
+    // createStorage persists it -> storage info masks it. rclone stores the param
+    // verbatim with no network call, so this is deterministic.
+    const token = '{"access_token":"e2e-fake-access","token_type":"Bearer","refresh_token":"e2e-fake-refresh"}'
+    const add = run(['storage', 'add', 'webdav', 'gtok', '--url', 'http://127.0.0.1:1', '--token-stdin'], { input: token })
+    check('token-stdin add exit 0', add.code === 0, add.stderr.trim())
+    const info = run(['storage', 'info', 'gtok', '--json'])
+    check('token storage persisted (info exit 0)', info.code === 0, info.stderr.trim())
+    check('token is stored (key present)', /"token"/.test(info.stdout))
+    check('token value is masked', !info.stdout.includes('e2e-fake-access') && !info.stdout.includes('e2e-fake-refresh'))
+    run(['storage', 'del', 'gtok'])
+  }
+
   process.stdout.write('\n== storage edit (merge, not replace) ==\n')
   {
     const ed = run(['storage', 'edit', 'fc', '--user', 'demo2'])
