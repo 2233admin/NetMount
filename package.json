@@ -20,7 +20,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "cli": "bun cli/main.ts"
+    "cli": "bun cli/main.ts",
+    "cli:e2e": "bun cli/test/e2e.ts"
   },
   "dependencies": {
     "@arco-design/web-react": "^2.63.3",
