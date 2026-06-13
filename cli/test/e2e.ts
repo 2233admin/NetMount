@@ -226,6 +226,27 @@ async function main(): Promise<void> {
     check('mv removed source', !existsSync(join(BACKEND, 'incoming', 'up.txt')))
   }
 
+  process.stdout.write('\n== sync (directory push/pull via a storage) ==\n')
+  {
+    const sdir = join(SRC, 'syncsrc')
+    mkdirSync(sdir, { recursive: true })
+    writeFileSync(join(sdir, 'a.txt'), 'alpha\n')
+    writeFileSync(join(sdir, 'b.txt'), 'bravo\n')
+    // push a local directory up to the (webdav) storage
+    const push = run(['sync', sdir, 'fc:synced'])
+    check('sync push exit 0', push.code === 0, push.stderr.trim())
+    check('sync pushed a.txt to backend', existsSync(join(BACKEND, 'synced', 'a.txt')))
+    check('sync pushed b.txt to backend', existsSync(join(BACKEND, 'synced', 'b.txt')))
+    // pull it back down into a fresh local dir
+    const pdir = join(SRC, 'syncpull')
+    const pull = run(['sync', 'fc:synced', pdir])
+    check('sync pull exit 0', pull.code === 0, pull.stderr.trim())
+    check('sync pulled bytes match', existsSync(join(pdir, 'a.txt')) && readFileSync(join(pdir, 'a.txt'), 'utf8') === 'alpha\n')
+    // re-run is idempotent (rclone skips already-transferred files) — must still exit 0
+    const again = run(['sync', sdir, 'fc:synced'])
+    check('sync re-run idempotent exit 0', again.code === 0, again.stderr.trim())
+  }
+
   process.stdout.write('\n== task list / status (config-only, read) ==\n')
   {
     // inject a saved task into the isolated app config

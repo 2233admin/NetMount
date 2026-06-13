@@ -581,6 +581,89 @@ addOutputOpts(
   else ok(`downloaded ${storage}:${path} -> ${resolve(absDir, name)}`)
 })
 
+// ---- sync (the bandwidth-arbitrage transit action) -----------------------
+// Directory-level push/pull between local and ANY storage. One side is usually
+// local (push to / pull from a fast cloud disk to dodge slow direct links), so
+// each side is resolved as a configured-storage remote ("name:path") or a local
+// path — Windows drive letters (D:\...) fall through to local because "D" is not
+// a configured storage. Human mode runs async with a live progress line on
+// stderr so multi-GB transfers are visible; --json blocks and prints a summary.
+// rclone sync is idempotent: a re-run resumes (already-transferred files skip).
+function resolveSide(arg: string): string {
+  const { storage, path } = parseRemote(arg)
+  if (searchStorage(storage)) return rcFs(storage, path)
+  return localFs(resolve(arg))
+}
+
+const napSync = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
+
+addOutputOpts(
+  program
+    .command('sync <src> <dst>')
+    .description('sync a directory between local and any storage (push/pull via the cloud); additive copy by default')
+    .option('--move', 'move instead of copy (remove source after a verified transfer)')
+    .option('--mirror', 'make dst identical to src, DELETING dst files not in src')
+    .option('--checksum', 'compare by hash instead of size+modtime')
+).action(
+  async (
+    src: string,
+    dst: string,
+    opts: CmdOpts & { move?: boolean; mirror?: boolean; checksum?: boolean }
+  ) => {
+    const mode = resolveMode(opts)
+    if (opts.move && opts.mirror) fail(EXIT.USAGE, '--move and --mirror are mutually exclusive')
+    await prep({ storages: true })
+    const srcFs = resolveSide(src)
+    const dstFs = resolveSide(dst)
+    const endpoint = opts.move ? '/sync/move' : opts.mirror ? '/sync/sync' : '/sync/copy'
+    const body: Record<string, unknown> = { srcFs, dstFs }
+    if (opts.checksum) body._config = { CheckSum: true }
+
+    if (mode === 'json') {
+      await rclone_api_post(endpoint, body) // blocks until the transfer finishes
+      printJson({ synced: src, to: dst, op: endpoint.slice('/sync/'.length) })
+      return
+    }
+
+    // human: kick off async, then poll job + global stats for a live progress line
+    const started = (await rclone_api_post(endpoint, { ...body, _async: true })) as { jobid?: number }
+    const jobid = started?.jobid
+    if (jobid == null) {
+      ok(`synced ${src} -> ${dst}`)
+      return
+    }
+    let done = false
+    let final: { success?: boolean; error?: string; duration?: number } = {}
+    while (!done) {
+      await napSync(700)
+      const st = (await rclone_api_post('/core/stats', {})) as {
+        bytes?: number
+        totalBytes?: number
+        speed?: number
+      }
+      const tx = st?.bytes ?? 0
+      const total = st?.totalBytes ?? 0
+      const pct = total > 0 ? Math.floor((tx / total) * 100) : 0
+      process.stderr.write(`\r  ${fmtBytes(tx)} / ${fmtBytes(total)} (${pct}%) at ${fmtBytes(st?.speed ?? 0)}/s   `)
+      const js = (await rclone_api_post('/job/status', { jobid })) as {
+        finished?: boolean
+        success?: boolean
+        error?: string
+        duration?: number
+      }
+      if (js?.finished) {
+        done = true
+        final = js
+      }
+    }
+    process.stderr.write('\n')
+    if (final.success === false || final.error) {
+      fail(EXIT.NETWORK, `sync failed: ${final.error || 'unknown error'}`, 'Re-run to resume — already-transferred files are skipped.')
+    }
+    ok(`synced ${src} -> ${dst}${final.duration != null ? ` in ${final.duration.toFixed(1)}s` : ''}`)
+  }
+)
+
 // ---- mounts ----
 const mounts = program.command('mounts').description('inspect active mounts')
 
