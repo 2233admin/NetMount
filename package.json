@@ -21,7 +21,8 @@
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "cli": "bun cli/main.ts",
-    "cli:e2e": "bun cli/test/e2e.ts"
+    "cli:e2e": "bun cli/test/e2e.ts",
+    "cli:build": "bun build cli/main.ts --compile --outfile dist/netmount"
   },
   "dependencies": {
     "@arco-design/web-react": "^2.63.3",
