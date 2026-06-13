@@ -31,3 +31,6 @@ tauri_netmount.key
 
 .tmp_openlist_src
 nul
+
+# GSD planning artifacts (local only, not for upstream)
+.planning/
