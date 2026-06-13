@@ -16,8 +16,17 @@ const execFileAsync = promisify(execFile)
 const exeSuffix = process.platform === 'win32' ? '.exe' : ''
 
 // 'binaries/rclone' style names are Tauri resource-relative; resolve to a real
-// path next to the running process plus the platform exe suffix.
+// path next to the running process plus the platform exe suffix. The CLI can
+// override the openlist/rclone binary location via env so it can point at real
+// downloaded binaries instead of the Tauri-bundled ones.
 function resolveBinary(nameOrBinary: string): string {
+  const short = nameOrBinary.includes('/') ? nameOrBinary.split('/').pop() : nameOrBinary
+  if (short === 'openlist' && process.env.NETMOUNT_OPENLIST_BIN) {
+    return process.env.NETMOUNT_OPENLIST_BIN
+  }
+  if (short === 'rclone' && process.env.NETMOUNT_RCLONE_BIN) {
+    return process.env.NETMOUNT_RCLONE_BIN
+  }
   const base = nameOrBinary.startsWith('binaries/')
     ? join(process.cwd(), nameOrBinary)
     : nameOrBinary
@@ -52,8 +61,18 @@ async function freePort(): Promise<number> {
 const nodeRuntime: Runtime = {
   spawn: {
     spawnSidecar: async (binary, args, cwd) => {
-      const child = spawn(resolveBinary(binary), args, { cwd, detached: false })
+      // Sidecars (rclone rcd / openlist) are long-lived servers the CLI reuses
+      // across invocations. detached + stdio:'ignore' + unref() (same recipe as
+      // the rcd spawn in cli/daemon.ts) so the sidecar outlives this short-lived
+      // CLI process AND never keeps it alive: without this the child's inherited
+      // stdio pipe pins the event loop and `bun cli/main.ts ...` hangs on exit
+      // waiting for the never-exiting server (deadly under spawnSync), and a
+      // non-detached child gets torn down on parent exit so the next invocation
+      // can't reuse it via the recorded daemon state.
+      const child = spawn(resolveBinary(binary), args, { cwd, detached: true, stdio: 'ignore' })
       children.set(shortName(binary), child as { pid: number; kill(): boolean })
+      child.on('error', () => {}) // surfaced via the readyCheck timeout instead
+      child.unref()
       return child.pid ?? 0
     },
     runSidecarOnce: (binary, args, opts) =>

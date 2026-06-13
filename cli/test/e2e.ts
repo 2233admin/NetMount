@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 
 const CLI = fileURLToPath(new URL('../main.ts', import.meta.url))
 const RCLONE = process.env.NETMOUNT_RCLONE_BIN || 'rclone'
+const OPENLIST = process.env.NETMOUNT_OPENLIST_BIN || 'openlist'
 const WEBDAV_PORT = 8791
 const WEBDAV_USER = 'demo'
 const WEBDAV_PASS = 'demopw' // throwaway fixture credential, not a real secret
@@ -54,6 +55,7 @@ const childEnv = {
   HOME,
   USERPROFILE: HOME,
   NETMOUNT_RCLONE_BIN: RCLONE,
+  NETMOUNT_OPENLIST_BIN: OPENLIST,
 }
 
 type RunResult = { code: number; stdout: string; stderr: string }
@@ -101,9 +103,21 @@ function startFakeCloud(): void {
   )
 }
 
+function killWindowsStrays(): void {
+  // openlist is spawned by the CLI's node runtime (not tracked here); make sure
+  // no stray openlist/rclone process survives the suite on Windows.
+  if (process.platform === 'win32') {
+    spawnSync(
+      'powershell.exe',
+      ['-NoProfile', '-Command', "Get-Process rclone,openlist -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"],
+      { stdio: 'ignore' }
+    )
+  }
+}
+
 function teardown(): void {
   try {
-    run(['daemon', 'stop'])
+    run(['daemon', 'stop']) // also stops openlist
   } catch {}
   for (const p of [serve, serveS3]) {
     if (p && p.pid) {
@@ -112,6 +126,7 @@ function teardown(): void {
       } catch {}
     }
   }
+  killWindowsStrays()
   try {
     rmSync(HOME, { recursive: true, force: true })
   } catch {}
@@ -120,6 +135,12 @@ function teardown(): void {
 // ---- preflight: is rclone usable? ----------------------------------------
 function rcloneAvailable(): boolean {
   const r = spawnSync(RCLONE, ['version'], { encoding: 'utf8' })
+  return r.status === 0
+}
+
+// ---- preflight: is openlist usable? --------------------------------------
+function openlistAvailable(): boolean {
+  const r = spawnSync(OPENLIST, ['version'], { encoding: 'utf8' })
   return r.status === 0
 }
 
@@ -355,6 +376,82 @@ async function main(): Promise<void> {
     await rc('/core/bwlimit', { rate: 'off' })
     check('stats showed live throughput (realSpeed > 0) during transfer', sawLive)
     check('stats bytes counter advanced during transfer', sawProgress)
+  }
+
+  // ---- openlist: real binary, Local driver (no creds, no network) ----------
+  // Gated on the openlist binary being runnable; self-skips like the rclone
+  // gate so the suite never hard-fails when openlist is absent.
+  if (openlistAvailable()) {
+    process.stdout.write('\n== openlist: providers + Local driver via the bridge ==\n')
+    {
+      // bring openlist up and confirm its drivers reach the catalog
+      const provs = run(['storage', 'providers', '--openlist', '--json'])
+      check('openlist providers exit 0', provs.code === 0, provs.stderr.trim())
+      let types: string[] = []
+      try {
+        types = (JSON.parse(provs.stdout) as { type: string }[]).map(p => p.type)
+      } catch {}
+      check('catalog includes Quark (openlist netdisk)', types.includes('Quark'), `got ${types.length}`)
+      check('catalog includes Local (openlist driver)', types.includes('Local'))
+
+      // a local dir with a known file, mounted via the openlist Local driver
+      const olRoot = join(HOME, 'olroot')
+      mkdirSync(olRoot, { recursive: true })
+      writeFileSync(join(olRoot, 'marker.txt'), 'openlist-marker\n')
+
+      const add = run([
+        'storage', 'add', 'Local', 'olloc',
+        '--mount-path', '/olloc',
+        '--option', `addition.root_folder_path=${olRoot}`,
+      ])
+      check('openlist storage add exit 0', add.code === 0, add.stderr.trim())
+
+      const list = run(['storage', 'list', '--json'])
+      check('storage list shows olloc', list.stdout.includes('"olloc"') || list.stdout.includes('olloc'))
+      const info = run(['storage', 'info', 'olloc', '--json'])
+      check('storage info olloc exit 0', info.code === 0, info.stderr.trim())
+      check('info reports openlist framework', /"framework":\s*"openlist"/.test(info.stdout))
+
+      // confirm it landed in openlist's own storage list (admin API)
+      const olState = (() => {
+        try {
+          return JSON.parse(readFileSync(join(HOME, '.netmount', 'openlist-daemon.json'), 'utf8')) as {
+            url: string
+            token: string
+          }
+        } catch {
+          return undefined
+        }
+      })()
+      check('openlist daemon state recorded', !!olState?.url && !!olState?.token)
+      if (olState) {
+        const r = await fetch(`${olState.url}/api/admin/storage/list`, {
+          headers: { Authorization: olState.token },
+        })
+        const body = (await r.json().catch(() => ({}))) as { data?: { content?: { mount_path?: string }[] } }
+        const mounts = (body.data?.content ?? []).map(s => s.mount_path)
+        check('openlist /api/admin/storage/list has /olloc', mounts.includes('/olloc'), JSON.stringify(mounts))
+
+        // content reachable through the bridge: list via openlist fs and see the file
+        const fr = await fetch(`${olState.url}/api/fs/list`, {
+          method: 'POST',
+          headers: { Authorization: olState.token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: '/olloc', password: '', page: 1, per_page: 0, refresh: true }),
+        })
+        const fb = (await fr.json().catch(() => ({}))) as { code?: number; data?: { content?: { name?: string }[] } }
+        const names = (fb.data?.content ?? []).map(f => f.name)
+        check('seeded file visible through the bridge (fs list)', names.includes('marker.txt'), JSON.stringify(names) + ` code=${fb.code}`)
+      }
+
+      const del = run(['storage', 'del', 'olloc'])
+      check('openlist storage del exit 0', del.code === 0, del.stderr.trim())
+      const after = run(['storage', 'list', '--json'])
+      check('deleted openlist storage is gone', !after.stdout.includes('olloc'))
+    }
+  } else {
+    process.stdout.write(
+      `\n== openlist == SKIP: openlist not runnable (NETMOUNT_OPENLIST_BIN=${process.env.NETMOUNT_OPENLIST_BIN ?? 'unset'}).\n`
+    )
   }
 
   process.stdout.write('\n== storage del ==\n')

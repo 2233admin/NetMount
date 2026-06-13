@@ -2,6 +2,7 @@
 import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname, basename } from 'node:path'
 import { Command } from 'commander'
+import { setAutoFreeze } from 'immer'
 import { rclone_api_post } from '../src/utils/rclone/request'
 import { setRuntime, getRuntime } from '../src/runtime/port'
 import { nodeRuntime } from '../src/runtime/node'
@@ -9,7 +10,7 @@ import { configService } from '../src/services/ConfigService'
 import { reupStorage } from '../src/services/storage/StorageManager'
 import { useStorageStore } from '../src/stores/storageStore'
 import { createStorage } from '../src/controller/storage/create'
-import { updateStorageInfoList } from '../src/controller/storage/allList'
+import { updateStorageInfoList, searchStorageInfo, storageInfoList } from '../src/controller/storage/allList'
 import {
   getFileList,
   mkDir,
@@ -44,6 +45,11 @@ import {
   type DaemonState,
 } from './daemon'
 import {
+  ensureOpenlist,
+  stopOpenlistDaemon,
+  openlistStatus,
+} from './openlist'
+import {
   EXIT,
   resolveMode,
   fail,
@@ -53,6 +59,13 @@ import {
   printJson,
   printTable,
 } from './output'
+
+// Shared store mutators (e.g. startOpenlist) assign directly into zustand/immer
+// state. immer auto-freezes produced state in dev (running .ts directly), which
+// turns those legitimate assignments into "Attempted to assign to readonly
+// property" throws on the openlist restart path. Production GUI builds ship with
+// auto-freeze off; match that so the CLI behaves identically.
+setAutoFreeze(false)
 
 // Install the node runtime before any shared controller/services run.
 setRuntime(nodeRuntime)
@@ -68,7 +81,7 @@ function addOutputOpts(cmd: Command): Command {
 // Bring the daemon up, wire it into the shared store, and fill the bits of
 // rcloneInfo that controller/services assume the GUI populated at startup.
 async function prep(
-  need: { version?: boolean; catalog?: boolean; storages?: boolean } = {}
+  need: { version?: boolean; catalog?: boolean; storages?: boolean; openlist?: boolean } = {}
 ): Promise<DaemonState> {
   let state: DaemonState
   try {
@@ -78,6 +91,21 @@ async function prep(
     fail(EXIT.DAEMON, `Failed to start rclone daemon: ${(e as Error).message}`)
   }
   connectStore(state)
+  // openlist storages live in a separate sidecar. When openlist is explicitly
+  // needed (creating/listing openlist-backed disks), bring it up + register the
+  // rclone bridge remote. Otherwise, if openlist already happens to be running,
+  // hydrate the store so reupStorage()/catalog include its drivers + storages —
+  // but never auto-START it for plain rclone commands.
+  if (need.openlist) {
+    try {
+      await ensureOpenlist()
+    } catch (e) {
+      fail(EXIT.DAEMON, `Failed to start openlist: ${(e as Error).message}`, 'Set NETMOUNT_OPENLIST_BIN to the openlist binary path.')
+    }
+  } else {
+    const ol = await openlistStatus()
+    if (ol.running) await ensureOpenlist()
+  }
   if (need.version) await reupRcloneVersion()
   if (need.catalog) await updateStorageInfoList()
   // storageList must be populated for convertStoragePath() to resolve a name
@@ -250,6 +278,32 @@ function buildStorageParams(
   return p
 }
 
+// Build the openlist storage param shape. openlist wants common fields flat
+// (mount_path etc.) plus a nested `addition` object that createStorage()
+// serializes to a JSON string and pairs with driver=<type>. The generic
+// --option escape hatch routes any key beginning "addition." into that nested
+// object (so e.g. --option addition.root_folder_path=/x is reachable for any
+// driver); everything else lands flat as a common field. --cookie is the
+// convenience flag for the netdisks (Quark/115/UC/...) whose auth is a cookie.
+function buildOpenlistParams(
+  name: string,
+  opts: { mountPath?: string; cookie?: string; option?: string[] }
+): Record<string, unknown> {
+  const common: Record<string, unknown> = {}
+  const addition: Record<string, unknown> = {}
+  common.mount_path = opts.mountPath ?? `/${name}`
+  if (opts.cookie) addition.cookie = opts.cookie
+  for (const kv of opts.option ?? []) {
+    const i = kv.indexOf('=')
+    if (i <= 0) continue
+    const key = kv.slice(0, i)
+    const val = kv.slice(i + 1)
+    if (key.startsWith('addition.')) addition[key.slice('addition.'.length)] = val
+    else common[key] = val
+  }
+  return { ...common, addition }
+}
+
 addOutputOpts(
   storage
     .command('add <type> <name>')
@@ -272,7 +326,9 @@ addOutputOpts(
     .option('--token-env <var>', 'read the OAuth token JSON from the named env var')
     .option('--client-id <id>', 'OAuth custom client id (optional)')
     .option('--client-secret <secret>', 'OAuth custom client secret (optional)')
-    .option('--option <key=value>', 'set any raw rclone backend param (repeatable) — escape hatch for all backends', collect, [])
+    .option('--option <key=value>', 'set any raw backend param (repeatable) — escape hatch; for openlist drivers, addition.<k>=<v> targets the nested addition object', collect, [])
+    .option('--cookie <cookie>', 'openlist netdisk auth cookie (Quark/115/UC/...); maps to addition.cookie')
+    .option('--mount-path <path>', 'openlist mount path (default /<name>)')
 ).action(
   async (
     type: string,
@@ -284,10 +340,34 @@ addOutputOpts(
       pass?: string; passwordStdin?: boolean; passwordEnv?: string
       token?: string; tokenStdin?: boolean; tokenEnv?: string
       clientId?: string; clientSecret?: string; option?: string[]
+      cookie?: string; mountPath?: string
     }
   ) => {
     const mode = resolveMode(opts)
+    // First populate the catalog with whatever is already up (rclone always;
+    // openlist only if already running) so we can read the type's framework.
     await prep({ catalog: true })
+    let info = searchStorageInfo(type)
+    // If the type isn't a known rclone backend, it may be an openlist driver
+    // that needs openlist running before it appears in the catalog. Bring
+    // openlist up and re-resolve. (searchStorageInfo falls back to [0] on miss,
+    // so compare the resolved type to the requested one to detect a real hit.)
+    if (!info || info.type !== type) {
+      await prep({ openlist: true, catalog: true })
+      info = searchStorageInfo(type)
+    }
+    const framework = info && info.type === type ? info.framework : 'rclone'
+
+    if (framework === 'openlist') {
+      const parameters = buildOpenlistParams(name, opts)
+      const created = await createStorage(name, type, parameters, {}, {})
+      if (!created) {
+        fail(EXIT.CONFIG, `Failed to add openlist storage "${name}" (driver ${type})`, 'Check the driver name (run: netmount storage providers) and required addition.* params.')
+      }
+      if (mode === 'json') printJson({ added: name, type, framework })
+      else ok(`storage "${name}" added (${type}, openlist)`)
+      return
+    }
 
     const secret = resolveSecret(opts)
     const token = resolveToken(opts)
@@ -311,20 +391,32 @@ addOutputOpts(
   storage
     .command('providers [type]')
     .alias('types')
-    .description("list rclone backend types, or show one type's config options")
-).action(async (type: string | undefined, opts: CmdOpts) => {
+    .description("list backend types, or show one type's config options")
+    .option('--openlist', 'also bring openlist up and include its drivers (Quark/115/aliyundrive/...)')
+).action(async (type: string | undefined, opts: CmdOpts & { openlist?: boolean }) => {
   const mode = resolveMode(opts)
-  await prep()
+  // --openlist brings openlist up so its drivers appear in the catalog. Either
+  // way prep auto-hydrates openlist if it is already running.
+  await prep(opts.openlist ? { openlist: true, catalog: true } : {})
   const res = (await rclone_api_post('/config/providers')) as { providers?: Provider[] } | undefined
   const provs = res?.providers ?? []
+  // openlist drivers (capitalized types) come from the storage-info catalog, not
+  // rclone's /config/providers. Include them when the catalog has been built.
+  const openlistTypes = storageInfoList
+    .filter(s => s.framework === 'openlist')
+    .map(s => ({ Name: s.type, Description: 'openlist driver', framework: 'openlist' as const }))
   if (!type) {
+    const all = [
+      ...provs.map(p => ({ ...p, framework: 'rclone' as const })),
+      ...openlistTypes,
+    ]
     if (mode === 'json') {
-      printJson(provs.map(p => ({ type: p.Name, description: p.Description })))
+      printJson(all.map(p => ({ type: p.Name, framework: p.framework, description: p.Description })))
       return
     }
     printTable(
-      provs.map(p => ({ TYPE: p.Name, DESCRIPTION: (p.Description ?? '').slice(0, 60) })),
-      'No providers reported by rclone.'
+      all.map(p => ({ TYPE: p.Name, FRAMEWORK: p.framework, DESCRIPTION: (p.Description ?? '').slice(0, 50) })),
+      'No providers reported.'
     )
     return
   }
@@ -791,38 +883,58 @@ addOutputOpts(daemon.command('start').description('start the rclone daemon')).ac
   }
 )
 
-addOutputOpts(daemon.command('status').description('show daemon status')).action(
+addOutputOpts(daemon.command('status').description('show daemon status (rclone + openlist)')).action(
   async (opts: CmdOpts) => {
     const mode = resolveMode(opts)
     const { running, state } = await daemonStatus()
+    const ol = await openlistStatus()
     if (mode === 'json') {
-      printJson({ running, pid: state?.pid, url: state?.url })
-    } else if (running && state) {
-      ok(`daemon running (pid ${state.pid}) at ${state.url}`)
+      printJson({
+        running,
+        pid: state?.pid,
+        url: state?.url,
+        openlist: { running: ol.running, url: ol.state?.url, port: ol.state?.port },
+      })
     } else {
-      info('daemon not running')
-      process.exit(EXIT.DAEMON)
+      if (running && state) ok(`rclone daemon running (pid ${state.pid}) at ${state.url}`)
+      else info('rclone daemon not running')
+      if (ol.running && ol.state) ok(`openlist running at ${ol.state.url}`)
+      else info('openlist not running')
+      if (!running) process.exit(EXIT.DAEMON)
     }
   }
 )
 
-addOutputOpts(daemon.command('stop').description('stop the rclone daemon')).action(
+addOutputOpts(daemon.command('stop').description('stop the daemon (rclone + openlist)')).action(
   async (opts: CmdOpts) => {
     const mode = resolveMode(opts)
+    // Stop openlist first (it depends on rcd for its bridge remote), then rcd.
+    const olStopped = await stopOpenlistDaemon().catch(() => false)
     const stopped = await stopDaemon()
-    if (mode === 'json') printJson({ stopped })
-    else if (stopped) ok('daemon stopped')
-    else info('daemon was not running')
+    if (mode === 'json') printJson({ stopped, openlistStopped: olStopped })
+    else {
+      if (olStopped) ok('openlist stopped')
+      if (stopped) ok('rclone daemon stopped')
+      else info('rclone daemon was not running')
+    }
   }
 )
 
-addOutputOpts(daemon.command('restart').description('stop then start the rclone daemon')).action(
+addOutputOpts(daemon.command('restart').description('stop then start the daemon (rclone + openlist if it was up)')).action(
   async (opts: CmdOpts) => {
     const mode = resolveMode(opts)
+    // Remember whether openlist was up, so we can bring it back.
+    const olWasUp = (await openlistStatus()).running
+    await stopOpenlistDaemon().catch(() => {})
     await stopDaemon()
-    const state = await prep()
-    if (mode === 'json') printJson({ pid: state.pid, url: state.url, port: state.port })
-    else ok(`daemon restarted (pid ${state.pid}) at ${state.url}`)
+    const state = await prep(olWasUp ? { openlist: true } : {})
+    const ol = await openlistStatus()
+    if (mode === 'json') {
+      printJson({ pid: state.pid, url: state.url, port: state.port, openlist: { running: ol.running, url: ol.state?.url } })
+    } else {
+      ok(`rclone daemon restarted (pid ${state.pid}) at ${state.url}`)
+      if (ol.running && ol.state) ok(`openlist restarted at ${ol.state.url}`)
+    }
   }
 )
 
@@ -1028,5 +1140,6 @@ addOutputOpts(program.command('stats').description('show live rclone transfer st
 )
 
 program.parseAsync(process.argv).catch((e: unknown) => {
+  if (process.env.NETMOUNT_DEBUG) process.stderr.write(((e as Error)?.stack ?? String(e)) + '\n')
   fail(EXIT.GENERAL, (e as Error).message ?? String(e))
 })
