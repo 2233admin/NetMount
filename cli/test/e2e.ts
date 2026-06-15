@@ -464,6 +464,11 @@ async function main(): Promise<void> {
         check('openlist add --refresh-token fails cleanly (no crash)', !addRt.stderr.includes('is not defined'), addRt.stderr.trim().slice(0, 160))
         const addPw = run(['storage', 'add', '123Pan', 'credpw', '--mount-path', '/credpw', '--user', 'alice', '--pass', 's3cr3t'])
         check('openlist add --user/--pass fails cleanly (no crash)', !addPw.stderr.includes('is not defined'), addPw.stderr.trim().slice(0, 160))
+        // A netdisk whose driver has a *required* addition default (Quark's
+        // root_folder_id='0'). The catalog computes that default; buildOpenlistParams
+        // must seed it, else openlist later rejects fs/list with "query fail [61004]".
+        const addQk = run(['storage', 'add', 'Quark', 'qkseed', '--mount-path', '/qkseed', '--cookie', 'DUMMY'])
+        check('openlist add Quark fails cleanly (no crash)', !addQk.stderr.includes('is not defined'), addQk.stderr.trim().slice(0, 160))
 
         const r2 = await fetch(`${olState.url}/api/admin/storage/list`, {
           headers: { Authorization: olState.token },
@@ -478,6 +483,8 @@ async function main(): Promise<void> {
         check('--refresh-token lands in addition.refresh_token', aliAdd.refresh_token === 'DUMMY_RT', JSON.stringify(aliAdd))
         check('--user lands in addition.username', panAdd.username === 'alice', JSON.stringify(panAdd))
         check('--pass lands in addition.password', panAdd.password === 's3cr3t', JSON.stringify(panAdd))
+        const qkAdd = parseAdd('/qkseed')
+        check('driver required default seeded (Quark root_folder_id=0)', qkAdd.root_folder_id === '0', JSON.stringify(qkAdd))
 
         // storage info must not leak the routed credentials
         const infoRt = run(['storage', 'info', 'credrt', '--json'])
@@ -485,8 +492,9 @@ async function main(): Promise<void> {
 
         run(['storage', 'del', 'credrt'])
         run(['storage', 'del', 'credpw'])
+        run(['storage', 'del', 'qkseed'])
         const after2 = run(['storage', 'list', '--json'])
-        check('credential test storages cleaned up', !after2.stdout.includes('credrt') && !after2.stdout.includes('credpw'))
+        check('credential test storages cleaned up', !after2.stdout.includes('credrt') && !after2.stdout.includes('credpw') && !after2.stdout.includes('qkseed'))
       }
     }
   } else {

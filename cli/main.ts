@@ -313,11 +313,21 @@ function buildOpenlistParams(
     accessToken?: string; clientId?: string; clientSecret?: string; option?: string[]
   },
   secret?: string,
-  refreshToken?: string
+  refreshToken?: string,
+  info?: { defaultParams?: { parameters?: { name?: string; default?: unknown }[] } }
 ): Record<string, unknown> {
   const common: Record<string, unknown> = {}
   const addition: Record<string, unknown> = {}
   common.mount_path = opts.mountPath ?? `/${name}`
+  // Seed the driver's required addition.* defaults that the catalog already
+  // computed (e.g. Quark's root_folder_id='0'). openlist rejects fs/list with
+  // "query fail [61004]" when such a default is left empty. User-supplied flags
+  // and --option below override these seeds.
+  for (const p of info?.defaultParams?.parameters ?? []) {
+    if (!p.name || !p.name.startsWith('addition.')) continue
+    if (p.default === '' || p.default == null) continue
+    addition[p.name.slice('addition.'.length)] = p.default
+  }
   // First-class credential flags route into the nested `addition` object, covering
   // the openlist driver auth families: cookie (Quark/UC/115), username+password
   // (Thunder/PikPak/123Pan/...), refresh_token (Baidu/Aliyundrive/Yandex/...),
@@ -406,7 +416,7 @@ addOutputOpts(
       // username+password drivers, plus a dedicated refresh_token channel.
       const secret = resolveSecret(opts)
       const refreshToken = resolveRefreshToken(opts)
-      const parameters = buildOpenlistParams(name, opts, secret, refreshToken)
+      const parameters = buildOpenlistParams(name, opts, secret, refreshToken, info)
       const created = await createStorage(name, type, parameters, {}, {})
       if (!created) {
         fail(EXIT.CONFIG, `Failed to add openlist storage "${name}" (driver ${type})`, 'Check the driver name (run: netmount storage providers) and required addition.* params.')
