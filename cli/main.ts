@@ -175,6 +175,17 @@ program
   .description('NetMount CLI — unified management of cloud storage over rclone + openlist')
   .version('1.2.4')
 
+// Load persisted config before any command runs. Without this, commands that
+// don't explicitly load it (storage/file/mount/daemon) fall back to roConfig's
+// per-process randomString() defaults — most damagingly framework.openlist.password,
+// which is generated fresh each process. That desyncs the openlist admin password
+// (set by `storage add`) from the rclone webdav bridge password (rebuilt by a later
+// `file ls`/mount process), producing 401 Unauthorized on every openlist data-plane
+// op. Loading here makes the decoded persisted password stable across processes.
+program.hook('preAction', async () => {
+  await configService.loadConfig()
+})
+
 // ---- storage ----
 const storage = program.command('storage').description('manage cloud storages')
 
