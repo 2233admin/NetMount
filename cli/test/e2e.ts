@@ -118,18 +118,18 @@ function killWindowsStrays(): void {
 function teardown(): void {
   try {
     run(['daemon', 'stop']) // also stops openlist
-  } catch {}
+  } catch { /* best-effort */ }
   for (const p of [serve, serveS3]) {
     if (p && p.pid) {
       try {
         process.kill(p.pid)
-      } catch {}
+      } catch { /* best-effort */ }
     }
   }
   killWindowsStrays()
   try {
     rmSync(HOME, { recursive: true, force: true })
-  } catch {}
+  } catch { /* best-effort */ }
 }
 
 // ---- preflight: is rclone usable? ----------------------------------------
@@ -212,7 +212,7 @@ async function main(): Promise<void> {
     let types: string[] = []
     try {
       types = (JSON.parse(all.stdout) as { type: string }[]).map(p => p.type)
-    } catch {}
+    } catch { /* best-effort */ }
     check('providers list is non-empty', types.length > 10, `got ${types.length}`)
     check('providers list includes s3/webdav/drive', ['s3', 'webdav', 'drive'].every(t => types.includes(t)))
     const one = run(['storage', 'providers', 's3', '--json'])
@@ -370,7 +370,7 @@ async function main(): Promise<void> {
           if (lastBytes >= 0 && j.bytes > 0) sawProgress = true
           lastBytes = j.bytes
         }
-      } catch {}
+      } catch { /* best-effort */ }
       await sleep(900)
     }
     await rc('/core/bwlimit', { rate: 'off' })
@@ -390,7 +390,7 @@ async function main(): Promise<void> {
       let types: string[] = []
       try {
         types = (JSON.parse(provs.stdout) as { type: string }[]).map(p => p.type)
-      } catch {}
+      } catch { /* best-effort */ }
       check('catalog includes Quark (openlist netdisk)', types.includes('Quark'), `got ${types.length}`)
       check('catalog includes Local (openlist driver)', types.includes('Local'))
 
