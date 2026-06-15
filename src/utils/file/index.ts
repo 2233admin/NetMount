@@ -171,7 +171,7 @@ export function getFileExtension(inputPath: string): string {
  * @returns 连接后的路径
  * 
  * @example
- * joinPath('folder', 'subfolder', 'file.txt') // '/folder/subfolder/file.txt'
+ * joinPath('folder', 'subfolder', 'file.txt') // 'folder/subfolder/file.txt'
  * joinPath('/folder/', '/subfolder/') // '/folder/subfolder'
  */
 export function joinPath(...paths: string[]): string {

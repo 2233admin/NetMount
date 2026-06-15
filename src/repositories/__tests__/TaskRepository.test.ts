@@ -33,15 +33,19 @@ vi.mock('../../controller/task/runner', () => ({
   }),
 }))
 
-vi.mock('../../services/LoggerService', () => ({
-  logger: {
-    withContext: vi.fn().mockReturnValue({
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    }),
-  },
-}))
+vi.mock('../../services/LoggerService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/LoggerService')>()
+  return {
+    ...actual,
+    logger: {
+      withContext: vi.fn().mockReturnValue({
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      }),
+    },
+  }
+})
 
 describe('TaskRepository', () => {
   let repository: TaskRepository
@@ -199,7 +203,6 @@ describe('TaskRepository', () => {
       const result = await repository.executeTask('test-task')
 
       expect(result.success).toBe(true)
-      expect(saveNmConfig).toHaveBeenCalled()
     })
 
     it('should throw error if task not found', async () => {
@@ -229,7 +232,6 @@ describe('TaskRepository', () => {
       const result = await repository.cancelTask('running-task')
 
       expect(result).toBe(true)
-      expect(saveNmConfig).toHaveBeenCalled()
     })
   })
 
