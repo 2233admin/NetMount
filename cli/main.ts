@@ -224,6 +224,16 @@ function resolveToken(opts: { token?: string; tokenStdin?: boolean; tokenEnv?: s
   return opts.token
 }
 
+// Read an openlist netdisk refresh_token from --refresh-token, --refresh-token-stdin,
+// or an env var. Same stdin/env discipline as the OAuth token and password channels
+// so the credential stays out of shell history. Used by drivers whose auth is a
+// refresh_token (Baidu/Aliyundrive/Yandex/...).
+function resolveRefreshToken(opts: { refreshToken?: string; refreshTokenStdin?: boolean; refreshTokenEnv?: string }): string | undefined {
+  if (opts.refreshTokenStdin) return readFileSync(0, 'utf8').trim()
+  if (opts.refreshTokenEnv) return process.env[opts.refreshTokenEnv]
+  return opts.refreshToken
+}
+
 // Map CLI flags to the rclone config keys each backend expects. The shared
 // secret channel (--pass/--password-stdin/--password-env) lands on the right
 // key per type: webdav/smb -> `pass` (IsPassword, rclone obscures it), s3 ->
@@ -287,12 +297,28 @@ function buildStorageParams(
 // convenience flag for the netdisks (Quark/115/UC/...) whose auth is a cookie.
 function buildOpenlistParams(
   name: string,
-  opts: { mountPath?: string; cookie?: string; option?: string[] }
+  opts: {
+    mountPath?: string; cookie?: string; user?: string
+    accessToken?: string; clientId?: string; clientSecret?: string; option?: string[]
+  },
+  secret?: string,
+  refreshToken?: string
 ): Record<string, unknown> {
   const common: Record<string, unknown> = {}
   const addition: Record<string, unknown> = {}
   common.mount_path = opts.mountPath ?? `/${name}`
+  // First-class credential flags route into the nested `addition` object, covering
+  // the openlist driver auth families: cookie (Quark/UC/115), username+password
+  // (Thunder/PikPak/123Pan/...), refresh_token (Baidu/Aliyundrive/Yandex/...),
+  // access_token (115 Open), and the optional OAuth client app. The long tail of
+  // driver-specific addition keys still goes through --option addition.<k>=<v>.
   if (opts.cookie) addition.cookie = opts.cookie
+  if (opts.user) addition.username = opts.user
+  if (secret) addition.password = secret
+  if (refreshToken) addition.refresh_token = refreshToken
+  if (opts.accessToken) addition.access_token = opts.accessToken
+  if (opts.clientId) addition.client_id = opts.clientId
+  if (opts.clientSecret) addition.client_secret = opts.clientSecret
   for (const kv of opts.option ?? []) {
     const i = kv.indexOf('=')
     if (i <= 0) continue
@@ -310,7 +336,7 @@ addOutputOpts(
     .description('add a cloud storage — type is any rclone backend (run: storage providers)')
     .option('--url <url>', 'webdav endpoint URL (also accepted as s3 endpoint / smb host)')
     .option('--vendor <vendor>', 'webdav vendor (other|nextcloud|owncloud|...)', 'other')
-    .option('--user <user>', 'username (webdav/smb)')
+    .option('--user <user>', 'username (webdav/smb; openlist username+password drivers -> addition.username)')
     .option('--provider <provider>', 's3 provider (AWS|Minio|Aliyun|Cloudflare|Other)')
     .option('--access-key <id>', 's3 access key id')
     .option('--endpoint <url>', 's3 endpoint (S3-compatible / non-AWS)')
@@ -318,7 +344,7 @@ addOutputOpts(
     .option('--host <host>', 'smb host')
     .option('--domain <domain>', 'smb domain')
     .option('--port <port>', 'smb/s3 port')
-    .option('--pass <secret>', 'password / s3 secret-access-key (prefer --password-stdin)')
+    .option('--pass <secret>', 'password / s3 secret-access-key / openlist driver password (prefer --password-stdin)')
     .option('--password-stdin', 'read the secret from stdin')
     .option('--password-env <var>', 'read the secret from the named env var')
     .option('--token <json>', 'OAuth token JSON from `rclone authorize <type>` (prefer --token-stdin)')
@@ -328,6 +354,10 @@ addOutputOpts(
     .option('--client-secret <secret>', 'OAuth custom client secret (optional)')
     .option('--option <key=value>', 'set any raw backend param (repeatable) — escape hatch; for openlist drivers, addition.<k>=<v> targets the nested addition object', collect, [])
     .option('--cookie <cookie>', 'openlist netdisk auth cookie (Quark/115/UC/...); maps to addition.cookie')
+    .option('--refresh-token <token>', 'openlist netdisk refresh_token (Baidu/Aliyundrive/Yandex/...); prefer --refresh-token-stdin')
+    .option('--refresh-token-stdin', 'read the refresh_token from stdin')
+    .option('--refresh-token-env <var>', 'read the refresh_token from the named env var')
+    .option('--access-token <token>', 'openlist netdisk access_token (e.g. 115 Open); maps to addition.access_token')
     .option('--mount-path <path>', 'openlist mount path (default /<name>)')
 ).action(
   async (
@@ -339,6 +369,8 @@ addOutputOpts(
       host?: string; domain?: string; port?: string
       pass?: string; passwordStdin?: boolean; passwordEnv?: string
       token?: string; tokenStdin?: boolean; tokenEnv?: string
+      refreshToken?: string; refreshTokenStdin?: boolean; refreshTokenEnv?: string
+      accessToken?: string
       clientId?: string; clientSecret?: string; option?: string[]
       cookie?: string; mountPath?: string
     }
@@ -359,7 +391,11 @@ addOutputOpts(
     const framework = info && info.type === type ? info.framework : 'rclone'
 
     if (framework === 'openlist') {
-      const parameters = buildOpenlistParams(name, opts)
+      // openlist netdisks share the secret channel (--pass/-stdin/-env) for
+      // username+password drivers, plus a dedicated refresh_token channel.
+      const secret = resolveSecret(opts)
+      const refreshToken = resolveRefreshToken(opts)
+      const parameters = buildOpenlistParams(name, opts, secret, refreshToken)
       const created = await createStorage(name, type, parameters, {}, {})
       if (!created) {
         fail(EXIT.CONFIG, `Failed to add openlist storage "${name}" (driver ${type})`, 'Check the driver name (run: netmount storage providers) and required addition.* params.')

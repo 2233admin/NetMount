@@ -447,6 +447,47 @@ async function main(): Promise<void> {
       check('openlist storage del exit 0', del.code === 0, del.stderr.trim())
       const after = run(['storage', 'list', '--json'])
       check('deleted openlist storage is gone', !after.stdout.includes('olloc'))
+
+      // ---- credential flags route into the nested `addition` object ----------
+      // The netdisk drivers split by auth family: refresh_token (Aliyundrive/
+      // Baidu/...) and username+password (123Pan/Thunder/...). Adding with the
+      // first-class flags must land the creds in addition.* (not as raw --option),
+      // and storage info must mask them. Creds are dummies; no network is hit
+      // (openlist just stores config — validation happens on first fs access).
+      if (olState) {
+        // Dummy creds can't pass openlist's eager driver init (token refresh /
+        // phone validation), so `add` exits non-zero BY DESIGN. What we verify is
+        // (a) it fails cleanly — a real error surfaced, not a headless crash like
+        // the old "document is not defined" — and (b) the flag still routed the
+        // credential into the persisted addition.* record (checked below).
+        const addRt = run(['storage', 'add', 'Aliyundrive', 'credrt', '--mount-path', '/credrt', '--refresh-token', 'DUMMY_RT'])
+        check('openlist add --refresh-token fails cleanly (no crash)', !addRt.stderr.includes('is not defined'), addRt.stderr.trim().slice(0, 160))
+        const addPw = run(['storage', 'add', '123Pan', 'credpw', '--mount-path', '/credpw', '--user', 'alice', '--pass', 's3cr3t'])
+        check('openlist add --user/--pass fails cleanly (no crash)', !addPw.stderr.includes('is not defined'), addPw.stderr.trim().slice(0, 160))
+
+        const r2 = await fetch(`${olState.url}/api/admin/storage/list`, {
+          headers: { Authorization: olState.token },
+        })
+        const b2 = (await r2.json().catch(() => ({}))) as { data?: { content?: { mount_path?: string; addition?: string }[] } }
+        const byMount = (m: string) => (b2.data?.content ?? []).find(s => s.mount_path === m)
+        const parseAdd = (m: string): Record<string, unknown> => {
+          try { return JSON.parse(byMount(m)?.addition ?? '{}') } catch { return {} }
+        }
+        const aliAdd = parseAdd('/credrt')
+        const panAdd = parseAdd('/credpw')
+        check('--refresh-token lands in addition.refresh_token', aliAdd.refresh_token === 'DUMMY_RT', JSON.stringify(aliAdd))
+        check('--user lands in addition.username', panAdd.username === 'alice', JSON.stringify(panAdd))
+        check('--pass lands in addition.password', panAdd.password === 's3cr3t', JSON.stringify(panAdd))
+
+        // storage info must not leak the routed credentials
+        const infoRt = run(['storage', 'info', 'credrt', '--json'])
+        check('storage info masks refresh_token', !infoRt.stdout.includes('DUMMY_RT'), infoRt.stdout.slice(0, 200))
+
+        run(['storage', 'del', 'credrt'])
+        run(['storage', 'del', 'credpw'])
+        const after2 = run(['storage', 'list', '--json'])
+        check('credential test storages cleaned up', !after2.stdout.includes('credrt') && !after2.stdout.includes('credpw'))
+      }
     }
   } else {
     process.stdout.write(
