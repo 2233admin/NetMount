@@ -24,7 +24,7 @@ import { updateStorageInfoList } from '../src/controller/storage/allList'
 import { ensureDaemon, connectStore, nmPaths, type DaemonState } from './daemon'
 import { ensureOpenlistBin } from './bootstrap'
 
-const OPENLIST_STATE_FILE = join(homedir(), '.netmount', 'openlist-daemon.json')
+const OPENLIST_STATE_FILE = join(nmPaths.dir, 'openlist-daemon.json')
 
 export interface OpenlistState {
   url: string
@@ -72,7 +72,7 @@ async function readOpenlistState(): Promise<OpenlistState | undefined> {
 }
 
 async function writeOpenlistState(s: OpenlistState): Promise<void> {
-  await mkdir(join(homedir(), '.netmount'), { recursive: true })
+  await mkdir(nmPaths.dir, { recursive: true })
   // 0o600: the state file holds the openlist admin token in plaintext.
   await writeFile(OPENLIST_STATE_FILE, JSON.stringify(s, null, 2), { mode: 0o600 })
 }

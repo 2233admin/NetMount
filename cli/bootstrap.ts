@@ -15,13 +15,18 @@
 // all of this.
 import { mkdir, chmod, rename, rm, readFile, writeFile } from 'node:fs/promises'
 import { createWriteStream, existsSync } from 'node:fs'
-import { join, basename } from 'node:path'
-import { homedir, tmpdir } from 'node:os'
+import { join, basename, delimiter } from 'node:path'
+import { tmpdir } from 'node:os'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { gunzipSync, unzipSync } from 'fflate'
+import { resolveDataDir } from '../src/runtime/dataDir'
 
-const BIN_DIR = join(homedir(), '.netmount', 'bin')
+// bin lives under the resolved data dir so it follows NETMOUNT_DATA_DIR /
+// portable mode (resolveDataDir), not always ~/.netmount.
+function binDir(): string {
+  return join(resolveDataDir(), 'bin')
+}
 // Pinned to match build.rs DEFAULT_OPENLIST_VERSION; override to track another.
 const OPENLIST_VERSION = process.env.NETMOUNT_OPENLIST_VERSION || 'v4.1.10'
 
@@ -162,12 +167,31 @@ async function extractBinary(
   await writeFile(destPath, Buffer.from(data))
 }
 
+// Scan PATH for an already-installed rclone/openlist so we reuse a binary the
+// user (or the GUI) already manages instead of downloading our own copy. Returns
+// the first hit; undefined if none.
+function findOnPath(tool: Tool): string | undefined {
+  const want = tool + exe
+  for (const d of (process.env.PATH || '').split(delimiter)) {
+    if (!d) continue
+    const p = join(d, want)
+    if (existsSync(p)) return p
+  }
+  return undefined
+}
+
 async function ensure(tool: Tool): Promise<string> {
   const want = tool + exe
-  const dest = join(BIN_DIR, want)
+  const dir = binDir()
+  const dest = join(dir, want)
+  // Resolution order: our own downloaded copy -> a binary already on PATH ->
+  // download. The downloaded copy wins so a deliberate `ensure` stays pinned;
+  // PATH wins over downloading so we never duplicate what's already installed.
   if (existsSync(dest)) return dest
+  const onPath = findOnPath(tool)
+  if (onPath) return onPath
 
-  await mkdir(BIN_DIR, { recursive: true })
+  await mkdir(dir, { recursive: true })
   const url = tool === 'rclone' ? rcloneUrl() : openlistUrl()
   const kind: 'zip' | 'tar.gz' = url.endsWith('.tar.gz') ? 'tar.gz' : 'zip'
   process.stderr.write(`  ${tool} 未找到, 正在下载...\n`)

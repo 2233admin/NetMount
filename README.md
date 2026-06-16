@@ -43,12 +43,26 @@ irm https://raw.githubusercontent.com/2233admin/NetMount/feat/headless-cli/scrip
 
 或去 [Releases](https://github.com/2233admin/NetMount/releases) 直接下对应平台的 `netmount-*` 二进制,丢进 PATH。
 
-首次运行时 CLI 会自动把 rclone + openlist 下载到 `~/.netmount/bin/`,不用手动装(国内默认走 `gh-proxy.com`,设 `NETMOUNT_GITHUB_PROXY=0` 直连 github)。Windows 上挂载还需 [WinFsp](https://winfsp.dev)。
+首次运行时,如果 `rclone` / `openlist` 已经在 PATH 上,CLI 直接用现成的;否则自动下载到 `~/.netmount/bin/`,不用手动装(国内默认走 `gh-proxy.com`,设 `NETMOUNT_GITHUB_PROXY=0` 直连 github)。也可以用 `NETMOUNT_RCLONE_BIN` / `NETMOUNT_OPENLIST_BIN` 指定自己的二进制。Windows 上挂载还需 [WinFsp](https://winfsp.dev)。
 
 ```sh
 netmount --help
 netmount daemon status
 ```
+
+### 与原版 GUI 共存
+
+正常安装的 GUI 和本 CLI 默认都用 `~/.netmount/`,配置 / 远端 / `rclone.conf` 自动共享 -- GUI 里建的存储,CLI 直接能操作,反之亦然(二进制各存一份,互不影响)。
+
+如果 GUI 是**便携版**(数据在 `<exe目录>/data/`),让 CLI 对齐它:
+
+```sh
+# 显式指向 GUI 的数据目录
+NETMOUNT_DATA_DIR=/path/to/NetMount/data netmount daemon status
+# 或把 CLI 二进制和 GUI 放一起,丢个 .portable 标记进同一目录,CLI 自动认
+```
+
+注意:CLI 和 GUI 不要同时操作同一份配置 / 同时跑各自的 daemon,避免写竞争。
 
 ## 发布版
 在仓库的 [Releases](https://github.com/VirtualHotBar/NetMount/releases) 页面或[官方站点](https://www.netmount.cn/download)可以下载到最新发布的版本。

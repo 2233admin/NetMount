@@ -6,6 +6,8 @@ import { setAutoFreeze } from 'immer'
 import { rclone_api_post } from '../src/utils/rclone/request'
 import { setRuntime, getRuntime } from '../src/runtime/port'
 import { nodeRuntime } from '../src/runtime/node'
+import { resolveDataDir } from '../src/runtime/dataDir'
+import { setNetmountDataDirOverride } from '../src/utils/netmountPaths'
 import { configService } from '../src/services/ConfigService'
 import { reupStorage } from '../src/services/storage/StorageManager'
 import { useStorageStore } from '../src/stores/storageStore'
@@ -72,6 +74,11 @@ setAutoFreeze(false)
 
 // Install the node runtime before any shared controller/services run.
 setRuntime(nodeRuntime)
+
+// Align shared path helpers (openlistDataDir, rcloneConfigFile, ...) with the
+// CLI's resolved data dir so NETMOUNT_DATA_DIR / portable mode redirects every
+// file the CLI touches, matching the GUI's resolve_data_dir().
+setNetmountDataDirOverride(resolveDataDir())
 
 type CmdOpts = { json?: boolean; format?: string }
 

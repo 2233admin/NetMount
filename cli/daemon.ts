@@ -7,13 +7,13 @@ import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { useRcloneStore } from '../src/stores/useRcloneStore'
 import { nmConfig } from '../src/services/ConfigService'
 import { ensureRcloneBin } from './bootstrap'
+import { resolveDataDir } from '../src/runtime/dataDir'
 
-const NM_DIR = join(homedir(), '.netmount')
+const NM_DIR = resolveDataDir()
 const STATE_FILE = join(NM_DIR, 'daemon.json')
 const CONFIG_FILE = join(NM_DIR, 'rclone.conf')
 const LOG_FILE = join(NM_DIR, 'rclone.log')

@@ -1,7 +1,20 @@
 import { nmConfig, osInfo, runtimeEnv } from '../services/ConfigService'
 import { formatPath } from './format'
 
+// CLI-only: the node entrypoint sets this (to resolveDataDir()) so shared code
+// that derives paths from netmountDataDir() honors NETMOUNT_DATA_DIR / portable
+// mode. The GUI never sets it -> its behavior is unchanged.
+let dataDirOverride: string | undefined
+
+function setNetmountDataDirOverride(dir: string | undefined): void {
+  dataDirOverride = dir
+}
+
 function netmountDataDir(): string {
+  if (dataDirOverride) {
+    const base = dataDirOverride.replace(/[\\/]+$/, '')
+    return formatPath(base + '/', osInfo.platform === 'windows')
+  }
   return formatPath(runtimeEnv.path.homeDir + '/.netmount/', osInfo.platform === 'windows')
 }
 
@@ -54,6 +67,7 @@ export {
   defaultCacheDir,
   defaultTransferDir,
   netmountDataDir,
+  setNetmountDataDirOverride,
   netmountLogDir,
   rcloneConfigFile,
   rcloneLogFile,

@@ -10,6 +10,7 @@ import { createServer } from 'node:net'
 import * as nodeOs from 'node:os'
 import { join } from 'node:path'
 import type { Runtime, OsInfo } from './port'
+import { resolveDataDir } from './dataDir'
 
 const execFileAsync = promisify(execFile)
 
@@ -206,7 +207,7 @@ const nodeRuntime: Runtime = {
   },
   configIO: {
     load: async <T = unknown>() => {
-      const configPath = join(nodeOs.homedir(), '.netmount', 'config.json')
+      const configPath = join(resolveDataDir(), 'config.json')
       try {
         return JSON.parse(await readFile(configPath, 'utf8')) as T
       } catch (e) {
@@ -215,7 +216,7 @@ const nodeRuntime: Runtime = {
       }
     },
     save: async data => {
-      const dir = join(nodeOs.homedir(), '.netmount')
+      const dir = resolveDataDir()
       await mkdir(dir, { recursive: true })
       await writeFile(join(dir, 'config.json'), JSON.stringify(data, null, 2))
     },
