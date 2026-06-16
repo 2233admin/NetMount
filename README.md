@@ -17,14 +17,13 @@
 
 ## 关于此 Fork
 
-本仓库是 [VirtualHotBar/NetMount](https://github.com/VirtualHotBar/NetMount) 的 fork。上游是带图形界面的 Tauri 桌面应用;本 fork 在其之上抽出 runtime seam,新增一套**无界面 headless CLI**,可在服务器 / 无桌面环境直接挂载与管理云存储。
+上游 [NetMount](https://github.com/VirtualHotBar/NetMount) 是带图形界面的 Tauri 桌面应用。本 fork 抽出 runtime seam,加了一套**无界面 headless CLI**,可在服务器 / 无桌面环境直接挂载和管理云存储。
 
-新增内容:
-- `cli/` -- headless 命令入口:daemon、storage(add/info/edit/del)、mount、file(ls/cp/mv/upload/download)、sync、task、stats、config
-- openlist + rclone 桥接,通过 runtime port seam 复用上游业务逻辑(不改 GUI 行为)
-- 用法见 [`docs/CLI-UX-DESIGN.md`](docs/CLI-UX-DESIGN.md)
+新增:
+- `cli/` -- daemon、storage、mount、file、sync、task、stats、config 等命令,用法见 [`docs/CLI-UX-DESIGN.md`](docs/CLI-UX-DESIGN.md)
+- openlist + rclone 桥接,复用上游业务逻辑,不改 GUI 行为
 
-许可证与上游一致,**AGPL-3.0**;上游版权与 LICENSE 完整保留。本 fork 不含任何凭证抓取 / 导出工具 -- 登录态管理是使用者本地的独立事项,不随本仓分发。
+AGPL-3.0,上游版权与 LICENSE 完整保留。不含任何凭证抓取 / 导出工具。
 
 ## 发布版
 在仓库的 [Releases](https://github.com/VirtualHotBar/NetMount/releases) 页面或[官方站点](https://www.netmount.cn/download)可以下载到最新发布的版本。
