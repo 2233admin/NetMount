@@ -25,6 +25,31 @@
 
 AGPL-3.0,上游版权与 LICENSE 完整保留。不含任何凭证抓取 / 导出工具。
 
+## 安装 headless CLI
+
+下载即用 -- 不用 clone 仓库,不用装 bun / node,二进制已内嵌 Bun runtime。
+
+Linux / macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/2233admin/NetMount/feat/headless-cli/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/2233admin/NetMount/feat/headless-cli/scripts/install.ps1 | iex
+```
+
+或去 [Releases](https://github.com/2233admin/NetMount/releases) 直接下对应平台的 `netmount-*` 二进制,丢进 PATH。
+
+首次运行时 CLI 会自动把 rclone + openlist 下载到 `~/.netmount/bin/`,不用手动装(国内默认走 `gh-proxy.com`,设 `NETMOUNT_GITHUB_PROXY=0` 直连 github)。Windows 上挂载还需 [WinFsp](https://winfsp.dev)。
+
+```sh
+netmount --help
+netmount daemon status
+```
+
 ## 发布版
 在仓库的 [Releases](https://github.com/VirtualHotBar/NetMount/releases) 页面或[官方站点](https://www.netmount.cn/download)可以下载到最新发布的版本。
 

@@ -1,0 +1,78 @@
+name: "CLI Release"
+
+# Compile the headless CLI into standalone binaries (Bun runtime embedded -- users
+# need neither bun nor node, no clone, no pnpm install) and attach them to a
+# GitHub Release. Independent of the GUI's v* release pipeline (main.yml).
+#
+# Cut a release:  git tag cli-v0.1.0 && git push fork cli-v0.1.0
+on:
+  push:
+    tags: ['cli-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create/attach (e.g. cli-v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - name: Cross-compile all targets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          build() { # <bun-target> <out-name>
+            echo "::group::$2"
+            bun build cli/main.ts --compile --target="$1" --outfile "dist/$2"
+            echo "::endgroup::"
+          }
+          build bun-linux-x64    netmount-linux-x64
+          build bun-linux-arm64  netmount-linux-arm64
+          build bun-darwin-x64   netmount-darwin-x64
+          build bun-darwin-arm64 netmount-darwin-arm64
+          build bun-windows-x64  netmount-windows-x64.exe
+          ( cd dist && sha256sum netmount-* > SHA256SUMS )
+          ls -la dist
+
+      - name: Resolve tag
+        id: tag
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: NetMount CLI ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            dist/netmount-linux-x64
+            dist/netmount-linux-arm64
+            dist/netmount-darwin-x64
+            dist/netmount-darwin-arm64
+            dist/netmount-windows-x64.exe
+            dist/SHA256SUMS
+          body: |
+            Headless NetMount CLI -- standalone binaries, no bun/node required.
+
+            Install (Linux/macOS):
+              curl -fsSL https://raw.githubusercontent.com/2233admin/NetMount/feat/headless-cli/scripts/install.sh | sh
+
+            Install (Windows PowerShell):
+              irm https://raw.githubusercontent.com/2233admin/NetMount/feat/headless-cli/scripts/install.ps1 | iex
+
+            On first use the CLI downloads rclone + openlist into ~/.netmount/bin/.
+            Windows mounting additionally needs WinFsp (https://winfsp.dev).

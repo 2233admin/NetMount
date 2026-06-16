@@ -11,6 +11,7 @@ import { homedir } from 'node:os'
 import { mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { useRcloneStore } from '../src/stores/useRcloneStore'
 import { nmConfig } from '../src/services/ConfigService'
+import { ensureRcloneBin } from './bootstrap'
 
 const NM_DIR = join(homedir(), '.netmount')
 const STATE_FILE = join(NM_DIR, 'daemon.json')
@@ -41,12 +42,6 @@ function randCred(): string {
 
 function authHeader(s: Pick<DaemonState, 'user' | 'pass'>): string {
   return `Basic ${Buffer.from(`${s.user}:${s.pass}`).toString('base64')}`
-}
-
-function resolveRcloneBin(): string {
-  const env = process.env.NETMOUNT_RCLONE_BIN
-  if (env) return env
-  return process.platform === 'win32' ? 'rclone.exe' : 'rclone'
 }
 
 function freePort(): Promise<number> {
@@ -95,7 +90,7 @@ export async function ensureDaemon(): Promise<DaemonState> {
   const existing = await readState()
   if (existing && (await ping(existing))) return existing
 
-  const bin = resolveRcloneBin()
+  const bin = await ensureRcloneBin()
   const port = await freePort()
   const state: DaemonState = {
     pid: 0,

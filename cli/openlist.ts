@@ -22,6 +22,7 @@ import { addOpenlistInRclone } from '../src/utils/openlist/openlist'
 import { openlist_api_ping } from '../src/utils/openlist/request'
 import { updateStorageInfoList } from '../src/controller/storage/allList'
 import { ensureDaemon, connectStore, nmPaths, type DaemonState } from './daemon'
+import { ensureOpenlistBin } from './bootstrap'
 
 const OPENLIST_STATE_FILE = join(homedir(), '.netmount', 'openlist-daemon.json')
 
@@ -116,6 +117,9 @@ export async function ensureOpenlist(): Promise<OpenlistState> {
 
   // Start a fresh openlist (writes config, resets admin pass, spawns server,
   // fetches token, enables WebDAV perms). Uses the singletons seeded above.
+  // Make sure the openlist binary is on disk first; the shared spawn path
+  // resolves it via NETMOUNT_OPENLIST_BIN, which ensureOpenlistBin() sets.
+  await ensureOpenlistBin()
   await startOpenlist()
 
   const ep = useOpenlistStore.getState().endpoint
