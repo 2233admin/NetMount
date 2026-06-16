@@ -181,6 +181,13 @@ async function rclone_api_wait_for_job(
 ): Promise<boolean> {
   const startTime = Date.now()
 
+  // A just-started/just-finished job can momentarily return no status from
+  // /job/status (registration/GC race). Treating a single null as terminal
+  // failure mis-reports successful sub-second transfers as failed. Tolerate a
+  // few consecutive nulls before giving up.
+  let nullStatusCount = 0
+  const MAX_NULL_STATUS = 3
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
     if (signal?.aborted) {
@@ -192,9 +199,15 @@ async function rclone_api_wait_for_job(
     const status = await rclone_api_job_status(jobid, true)
 
     if (!status) {
-      logger.error(`Failed to get job status for jobid: ${jobid}`)
-      return false
+      nullStatusCount++
+      if (nullStatusCount >= MAX_NULL_STATUS) {
+        logger.error(`Failed to get job status for jobid: ${jobid} after ${nullStatusCount} attempts`)
+        return false
+      }
+      await new Promise(resolve => setTimeout(resolve, pollInterval))
+      continue
     }
+    nullStatusCount = 0
 
     if (status.finished) {
       if (status.success) {
