@@ -182,7 +182,7 @@ describe('TaskRepository', () => {
 
   describe('executeTask', () => {
     it('should execute task successfully', async () => {
-      const { nmConfig, saveNmConfig } = await import('../../services/ConfigService')
+      const { nmConfig } = await import('../../services/ConfigService')
       const { runTask } = await import('../../controller/task/runner')
       
       const mockTask: TaskListItem = {
@@ -215,7 +215,7 @@ describe('TaskRepository', () => {
 
   describe('cancelTask', () => {
     it('should cancel task successfully', async () => {
-      const { nmConfig, saveNmConfig } = await import('../../services/ConfigService')
+      const { nmConfig } = await import('../../services/ConfigService')
       
       nmConfig.task = [
         {
