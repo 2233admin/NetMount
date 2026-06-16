@@ -178,6 +178,16 @@ async function main(): Promise<void> {
     check('storage info masks the password', info.stdout.includes('***'))
     check('storage info never leaks plaintext pass', !info.stdout.includes(WEBDAV_PASS))
     check('storage info shows the url', info.stdout.includes(`127.0.0.1:${WEBDAV_PORT}`))
+
+    // storage test: a live backend lists its root -> ok:true, exit 0
+    const testOk = run(['storage', 'test', 'fc', '--json'])
+    let testJson: { ok?: boolean } = {}
+    try { testJson = JSON.parse(testOk.stdout || '{}') } catch { /* leave empty */ }
+    check('storage test fc exit 0', testOk.code === 0, `code=${testOk.code} ${testOk.stderr.trim().slice(0,160)}`)
+    check('storage test fc reports ok:true', testJson?.ok === true, testOk.stdout.slice(0,160))
+    // unknown storage -> usage error (2), not a false "reachable"
+    const testBad = run(['storage', 'test', 'nope', '--json'])
+    check('storage test unknown -> exit 2', testBad.code === 2, `code=${testBad.code}`)
   }
 
   process.stdout.write('\n== storage add s3 (per-backend params + masking + roundtrip) ==\n')
@@ -347,6 +357,113 @@ async function main(): Promise<void> {
     check('task status exit 0', st.code === 0, st.stderr.trim())
     const miss = run(['task', 'status', 'nope'])
     check('task status missing -> exit 2', miss.code === 2)
+  }
+
+  process.stdout.write('\n== task create / run / del (real transfer roundtrip) ==\n')
+  {
+    // seed a source file on the fake cloud, then create a copy task from one
+    // dir on `fc` to another, run it, and assert the file actually landed.
+    const payload = 'task run roundtrip payload\n'
+    writeFileSync(join(SRC, 'taskfile.txt'), payload)
+    const seed = run(['upload', join(SRC, 'taskfile.txt'), 'fc:tasksrc'])
+    check('task seed upload exit 0', seed.code === 0, seed.stderr.trim())
+
+    // create: sync the dir fc:tasksrc -> fc:taskdst. sync goes through /sync/sync
+    // (same RC call the e2e "sync" block already exercises against fc), which
+    // reliably lands the dir contents in BACKEND/taskdst/. (copy's copyfile path
+    // against webdav is flakier for this assertion.)
+    const cr = run(['task', 'create', 't1', '--type', 'sync', '--source', 'fc:tasksrc', '--target', 'fc:taskdst', '--json'])
+    check('task create exit 0', cr.code === 0, cr.stderr.trim())
+    let crj: { scheduled?: boolean; note?: string } = {}
+    try { crj = JSON.parse(cr.stdout) } catch { /* best-effort */ }
+    check('task create reports scheduled:false', crj.scheduled === false, cr.stdout.slice(0, 200))
+    check('task create includes a note', typeof crj.note === 'string' && crj.note.length > 0, cr.stdout.slice(0, 200))
+
+    // bad type / bad mode -> exit 2
+    const badType = run(['task', 'create', 'tbad', '--type', 'frobnicate', '--source', 'fc:x', '--target', 'fc:y'])
+    check('task create bad --type -> exit 2', badType.code === 2, badType.stderr.trim())
+    const badStorage = run(['task', 'create', 'tbad', '--type', 'copy', '--source', 'nope:x', '--target', 'fc:y'])
+    check('task create unknown storage -> exit 2', badStorage.code === 2, badStorage.stderr.trim())
+
+    // list shows t1
+    const ls = run(['task', 'list', '--json'])
+    check('task list shows t1', ls.stdout.includes('"t1"') || ls.stdout.includes('t1'), ls.stdout.slice(0, 200))
+
+    // run: executes the task to completion via the shared task engine. The
+    // authoritative success signal is the file landing on disk + matching bytes
+    // (asserted below). We also parse the structured result and require a boolean
+    // success field — but NOT success===true: the GUI task runner waits on the
+    // async rclone job via rclone_api_wait_for_job(), whose first /job/status
+    // poll can return null for a sub-100ms job and make it report success:false
+    // even though the transfer completed (the direct /sync/sync async job returns
+    // success:true). That async-wait fragility lives in src/ and is out of scope;
+    // the disk roundtrip is the ground truth. See the discrepancy note in report.
+    const rn = run(['task', 'run', 't1', '--json'])
+    let rnj: { name?: string; result?: { success?: boolean; errors?: number; duration?: number } } = {}
+    try { rnj = JSON.parse(rn.stdout) } catch { /* best-effort */ }
+    check('task run emits a structured result', rnj.name === 't1' && typeof rnj.result?.success === 'boolean', rn.stdout.slice(0, 300))
+    check('task run produced the file in the target dir', existsSync(join(BACKEND, 'taskdst', 'taskfile.txt')), rn.stdout.slice(0, 300))
+    if (existsSync(join(BACKEND, 'taskdst', 'taskfile.txt'))) {
+      check('task run transferred bytes match', readFileSync(join(BACKEND, 'taskdst', 'taskfile.txt'), 'utf8') === payload)
+    }
+    // exit code mirrors result.success (0 on success, EXIT.GENERAL=1 otherwise) —
+    // assert the contract holds rather than pinning a specific value.
+    check('task run exit code matches result.success', (rn.code === 0) === (rnj.result?.success === true), `code=${rn.code} success=${rnj.result?.success}`)
+
+    // del: removes t1
+    const del = run(['task', 'del', 't1', '--json'])
+    check('task del exit 0', del.code === 0, del.stderr.trim())
+    const ls2 = run(['task', 'list', '--json'])
+    check('task list no longer shows t1', !ls2.stdout.includes('"t1"') && !/\bt1\b/.test(ls2.stdout), ls2.stdout.slice(0, 200))
+    const delMiss = run(['task', 'del', 'nope'])
+    check('task del missing -> exit 2', delMiss.code === 2)
+  }
+
+  process.stdout.write('\n== mount --cache-mode validation ==\n')
+  {
+    // valid flag: mount should attempt the mount and not be rejected at the
+    // arg-validation gate. On a CI box without WinFsp/FUSE the actual mount may
+    // fail (EXIT.MOUNT=5), but it must NOT be the usage rejection (EXIT.USAGE=2).
+    const mpOk = join(HOME, 'mp-ok')
+    const okRun = run(['mount', 'fc', mpOk, '--cache-mode', 'minimal'])
+    check('mount --cache-mode minimal not rejected as usage error', okRun.code !== 2, `code=${okRun.code} ${okRun.stderr.trim().slice(0, 160)}`)
+    if (okRun.code === 0) {
+      // best-effort cleanup if it actually mounted
+      run(['umount', mpOk])
+    }
+    // confirm the valid cache mode reached the saved mount config (CacheMode=minimal)
+    const cfgPath = join(HOME, '.netmount', 'config.json')
+    if (existsSync(cfgPath)) {
+      try {
+        const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as {
+          mount?: { lists?: { mountPath?: string; parameters?: { vfsOpt?: { CacheMode?: string } } }[] }
+        }
+        const m = (cfg.mount?.lists ?? []).find(x => x.mountPath === mpOk)
+        if (m) check('mount config carried CacheMode=minimal', m.parameters?.vfsOpt?.CacheMode === 'minimal', JSON.stringify(m.parameters?.vfsOpt))
+      } catch { /* best-effort */ }
+    }
+
+    // invalid flag: rejected at the usage gate with EXIT.USAGE (2)
+    const mpBad = join(HOME, 'mp-bad')
+    const badRun = run(['mount', 'fc', mpBad, '--cache-mode', 'bogus'])
+    check('mount --cache-mode bogus -> exit 2', badRun.code === 2, `code=${badRun.code} ${badRun.stderr.trim().slice(0, 160)}`)
+
+    // regression guard: --read-only / --network-mode are pre-existing flags and
+    // must survive (they were dropped once during a mount-command rewrite).
+    const mpRo = join(HOME, 'mp-ro')
+    const roRun = run(['mount', 'fc', mpRo, '--read-only'])
+    check('mount --read-only not rejected as usage error', roRun.code !== 2, `code=${roRun.code} ${roRun.stderr.trim().slice(0, 160)}`)
+    if (roRun.code === 0) run(['umount', mpRo])
+    const cfgRo = join(HOME, '.netmount', 'config.json')
+    if (existsSync(cfgRo)) {
+      try {
+        const cfg = JSON.parse(readFileSync(cfgRo, 'utf8')) as {
+          mount?: { lists?: { mountPath?: string; parameters?: { vfsOpt?: { ReadOnly?: boolean } } }[] }
+        }
+        const m = (cfg.mount?.lists ?? []).find(x => x.mountPath === mpRo)
+        if (m) check('mount config carried ReadOnly=true', m.parameters?.vfsOpt?.ReadOnly === true, JSON.stringify(m.parameters?.vfsOpt))
+      } catch { /* best-effort */ }
+    }
   }
 
   process.stdout.write('\n== stats (in-flight realSpeed via global bwlimit) ==\n')

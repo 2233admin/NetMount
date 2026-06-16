@@ -35,6 +35,9 @@ import type {
   VfsOptions,
   MountOptions,
 } from '../src/type/rclone/storage/mount/parameters'
+import { taskRepository } from '../src/repositories/task/TaskRepository'
+import { saveTask, delTask } from '../src/controller/task/task'
+import type { TaskListItem } from '../src/type/config'
 import {
   ensureDaemon,
   connectStore,
@@ -529,6 +532,43 @@ addOutputOpts(
   for (const [k, v] of Object.entries(safe)) info(`  ${k}: ${String(v)}`)
 })
 
+// ---- storage test ----
+// Reachability + credential check: list the storage root. Works for every
+// backend (unlike about/quota, which many drivers don't support). A dead
+// cookie / expired token / 429 surfaces here as a non-ok result with reason.
+addOutputOpts(
+  storage.command('test <name>').description('check a storage is reachable and its credentials are valid')
+).action(async (name: string, opts: CmdOpts) => {
+  const mode = resolveMode(opts)
+  await prep({ version: true, storages: true })
+  const target = searchStorage(name)
+  if (!target) {
+    fail(EXIT.USAGE, `no storage named "${name}"`, 'run `netmount storage list` to see configured storages')
+  }
+  let reachable = false
+  let reason: string | null = null
+  try {
+    // Same path `file ls` uses; lists the storage root. undefined = backend
+    // rejected auth or is unreachable (dead cookie / expired token / 429).
+    const list = await getFileList(name, '/')
+    if (Array.isArray(list)) {
+      reachable = true
+    } else {
+      reason = 'backend returned no listing (auth rejected, expired credential, or unreachable)'
+    }
+  } catch (e) {
+    reason = (e as Error)?.message ?? String(e)
+  }
+  if (mode === 'json') {
+    printJson({ name, ok: reachable, reason })
+  } else if (reachable) {
+    ok(`storage "${name}" is reachable`)
+  } else {
+    info(`storage "${name}" not reachable: ${reason ?? 'unknown'}`)
+  }
+  if (!reachable) process.exit(EXIT.NETWORK)
+})
+
 addOutputOpts(
   storage.command('del <name>').alias('rm').description('delete a storage (also unmounts and clears its cache)')
 ).action(async (name: string, opts: CmdOpts) => {
@@ -602,14 +642,21 @@ addOutputOpts(
     .command('mount <storage> <mountpoint>')
     .description('mount a storage at a drive letter (Windows) or directory')
     .option('--cache-mode <mode>', 'VFS cache mode: off | minimal | writes | full', 'writes')
-).action(async (storageName: string, mountpoint: string, opts: CmdOpts & { cacheMode?: string }) => {
+    .option('--read-only', 'mount read-only')
+    .option('--network-mode', 'mount as a network drive (Windows)')
+).action(async (storageName: string, mountpoint: string, opts: CmdOpts & { cacheMode?: string; readOnly?: boolean; networkMode?: boolean }) => {
   const mode = resolveMode(opts)
+  const cacheMode = opts.cacheMode ?? 'writes'
+  const VFS_CACHE_MODES = ['off', 'minimal', 'writes', 'full']
+  if (!VFS_CACHE_MODES.includes(cacheMode)) {
+    fail(EXIT.USAGE, `invalid --cache-mode "${cacheMode}"`, `valid modes: ${VFS_CACHE_MODES.join(', ')}`)
+  }
   await prep({ version: true, storages: true })
   // Default to 'writes' (matching the GUI) so writes to remotes like webdav/s3
   // that need a known content-length don't fail under the off cache mode.
   const parameters = {
-    vfsOpt: { CacheMode: opts.cacheMode ?? 'writes' } as VfsOptions,
-    mountOpt: {} as MountOptions,
+    vfsOpt: { CacheMode: cacheMode, ...(opts.readOnly ? { ReadOnly: true } : {}) } as VfsOptions,
+    mountOpt: { ...(opts.networkMode ? { NetworkMode: true } : {}) } as MountOptions,
   }
   await addMountStorage(storageName, mountpoint, parameters, false)
   const mounted = await mountStorage({
@@ -1154,6 +1201,138 @@ addOutputOpts(task.command('status <name>').description('show one saved task in 
     })
   }
 )
+
+// Execute a saved task to completion via the shared task engine (same path the
+// GUI scheduler uses). Needs the daemon up so the underlying copy/move/sync RC
+// calls have a backend; returns the TaskResult so we can report + set exit code.
+addOutputOpts(task.command('run <name>').description('run a saved task now (to completion)')).action(
+  async (name: string, opts: CmdOpts) => {
+    const mode = resolveMode(opts)
+    await configService.loadConfig()
+    const t = (configService.getConfig().task ?? []).find(x => x.name === name)
+    if (!t) fail(EXIT.USAGE, `no saved task named "${name}"`, 'run `netmount task list` to see saved tasks')
+    // storages:true populates the storage list so convertStoragePath() can resolve
+    // the task's "storage:" remotes — without it the copy/sync layer throws
+    // "Invalid source or destination path".
+    await prep({ storages: true })
+    const result = await taskRepository.executeTask(name)
+    if (mode === 'json') {
+      printJson({ name, result })
+    } else {
+      const summary =
+        `task "${name}" ${result.success ? 'succeeded' : 'failed'} ` +
+        `(${result.errors} error${result.errors === 1 ? '' : 's'}, ${result.duration}ms)`
+      if (result.success) ok(summary)
+      else info(summary + (result.errorMessages?.length ? ` -- ${result.errorMessages.join('; ')}` : ''))
+    }
+    if (!result.success) process.exit(EXIT.GENERAL)
+  }
+)
+
+// Delete a saved task from NMConfig.task[]. We call delTask() for its scheduler
+// side effect (cancel any pending timer), then remove the entry in place and
+// persist. NOTE: the GUI's deleteTaskConfig reassigns `nmConfig.task = filter()`,
+// but the exported `nmConfig` Proxy has only a `get` trap (ConfigService.ts:347)
+// — so that reassignment writes to the Proxy target, not configService.config,
+// and never persists. We splice the live config array in place (no reassignment)
+// so the delete actually reaches disk. See the discrepancy note in the report.
+addOutputOpts(task.command('del <name>').alias('rm').description('delete a saved task')).action(
+  async (name: string, opts: CmdOpts) => {
+    const mode = resolveMode(opts)
+    await configService.loadConfig()
+    const tasks = configService.getConfig().task ?? []
+    const idx = tasks.findIndex(x => x.name === name)
+    if (idx < 0) fail(EXIT.USAGE, `no saved task named "${name}"`, 'run `netmount task list` to see saved tasks')
+    await delTask(name) // cancel any scheduler timer (no-op for unscheduled tasks)
+    tasks.splice(idx, 1) // mutate in place so saveConfig() actually persists
+    await configService.saveConfig()
+    if (mode === 'json') printJson({ deleted: true, name })
+    else ok(`deleted task ${name}`)
+  }
+)
+
+// Create a saved task. NOTE: the CLI has no resident scheduler — timed/interval
+// tasks will NOT auto-fire from the CLI (that loop lives in the GUI / a future
+// daemon). Output always reports scheduled:false + a note so we never imply a
+// timer is running. Use `task run <name>` to execute on demand.
+const TASK_TYPES = ['copy', 'move', 'sync', 'delete', 'bisync']
+const TASK_MODES = ['disposable', 'start', 'time', 'interval']
+addOutputOpts(
+  task
+    .command('create <name>')
+    .description('create a saved task (does NOT auto-schedule; run it with `task run`)')
+    .option('--type <type>', `task type: ${TASK_TYPES.join(' | ')}`)
+    .option('--source <storage:path>', 'source endpoint (split on the first ":")')
+    .option('--target <storage:path>', 'target endpoint (required except for --type delete)')
+    .option('--mode <mode>', `schedule mode: ${TASK_MODES.join(' | ')}`, 'disposable')
+    .addHelpText(
+      'after',
+      '\nNote: the CLI does NOT run a scheduler. time/interval tasks will not auto-fire here;\n' +
+        'they need the GUI or a resident daemon. Use `netmount task run <name>` to execute now.'
+    )
+).action(async (name: string, opts: CmdOpts & { type?: string; source?: string; target?: string; mode?: string }) => {
+  const mode = resolveMode(opts)
+  await configService.loadConfig()
+
+  if (!opts.type) fail(EXIT.USAGE, 'missing --type', `--type must be one of: ${TASK_TYPES.join(', ')}`)
+  if (!TASK_TYPES.includes(opts.type!)) {
+    fail(EXIT.USAGE, `invalid --type "${opts.type}"`, `valid types: ${TASK_TYPES.join(', ')}`)
+  }
+  const runMode = opts.mode ?? 'disposable'
+  if (!TASK_MODES.includes(runMode)) {
+    fail(EXIT.USAGE, `invalid --mode "${runMode}"`, `valid modes: ${TASK_MODES.join(', ')}`)
+  }
+  if (!opts.source) fail(EXIT.USAGE, 'missing --source', 'pass --source <storage:path>')
+  const needTarget = opts.type !== 'delete'
+  if (needTarget && !opts.target) {
+    fail(EXIT.USAGE, 'missing --target', `--type ${opts.type} requires --target <storage:path>`)
+  }
+
+  // Split storage:path on the FIRST ":" only (paths may contain colons).
+  const src = parseRemote(opts.source!)
+  const tgt = opts.target ? parseRemote(opts.target) : { storage: '', path: '' }
+
+  // Validate referenced storages exist so the task isn't a dangling reference.
+  // searchStorage() reads the loaded storage list; populate it first via prep().
+  await prep({ storages: true })
+  if (!searchStorage(src.storage)) {
+    fail(EXIT.USAGE, `unknown source storage "${src.storage}"`, 'run `netmount storage list` to see configured storages')
+  }
+  if (opts.target && !searchStorage(tgt.storage)) {
+    fail(EXIT.USAGE, `unknown target storage "${tgt.storage}"`, 'run `netmount storage list` to see configured storages')
+  }
+
+  const taskItem: TaskListItem = {
+    name,
+    taskType: opts.type!,
+    source: { storageName: src.storage, path: src.path },
+    target: { storageName: tgt.storage, path: tgt.path },
+    enable: true,
+    run: { mode: runMode, time: { intervalDays: 0, h: 0, m: 0, s: 0 } },
+    runInfo: {},
+  }
+  await saveTask(taskItem)
+
+  const timed = runMode === 'time' || runMode === 'interval'
+  const note = timed
+    ? "timed tasks need the GUI or a resident daemon to fire; use 'netmount task run <name>' to run now"
+    : "use 'netmount task run <name>' to execute"
+  if (mode === 'json') {
+    printJson({
+      created: true,
+      name,
+      type: opts.type,
+      mode: runMode,
+      source: loc(taskItem.source),
+      target: loc(taskItem.target),
+      scheduled: false,
+      note,
+    })
+  } else {
+    ok(`created task ${name} (${opts.type}, ${runMode})`)
+    info(note)
+  }
+})
 
 // ---- stats ---------------------------------------------------------------
 // Live transfer stats from the daemon's /core/stats, via the shared controller.
