@@ -13,7 +13,7 @@ export default defineConfig({
     testTimeout: 10000,
     
     // 包含测试文件的模式
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    include: ['src/**/*.{test,spec}.{ts,tsx}', 'cli/**/*.{test,spec}.ts'],
     
     // 排除的文件
     exclude: ['**/node_modules/**', '**/dist/**', '**/e2e/**'],
@@ -28,11 +28,12 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
-      include: ['src/**/*.{ts,tsx}'],
+      include: ['src/**/*.{ts,tsx}', 'cli/**/*.ts'],
       exclude: [
         'src/**/*.d.ts',
         'src/test/**',
         'src/**/*.{test,spec}.{ts,tsx}',
+        'cli/**/*.{test,spec}.ts',
         'src/main.tsx',
         'src/app.tsx',
       ],

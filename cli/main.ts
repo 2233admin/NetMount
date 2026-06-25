@@ -1,9 +1,14 @@
 #!/usr/bin/env bun
 import { execFile } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { nodeRuntime } from '../src/runtime/node'
 import { setRuntime } from '../src/runtime/port'
+import { configService } from '../src/services/ConfigService'
+import { getStorageParams, reupStorage, searchStorage } from '../src/services/storage/StorageManager'
+import { useStorageStore } from '../src/stores/storageStore'
 import {
+  connectStore,
   DaemonError,
   daemonStatus,
   ensureDaemon,
@@ -12,7 +17,8 @@ import {
   resolveRcloneBin,
   stopDaemon,
 } from './daemon'
-import { EXIT, fail, printJson, printLines, resolveMode, type OutputMode } from './output'
+import { redactParams } from './redact'
+import { EXIT, fail, fmtBytes, info, printJson, printLines, resolveMode, type OutputMode } from './output'
 
 setRuntime(nodeRuntime)
 
@@ -62,6 +68,8 @@ function usage(): void {
     '  netmount daemon status [--format json]',
     '  netmount daemon start [--format json]',
     '  netmount daemon stop [--format json]',
+    '  netmount storage list [--format json]',
+    '  netmount storage info <name> [--format json]',
     '',
     'Environment:',
     '  NETMOUNT_RCLONE_BIN    Path to rclone binary when it is not on PATH',
@@ -131,6 +139,96 @@ async function runDaemon(args: string[], mode: OutputMode): Promise<void> {
   fail(EXIT.USAGE, `unknown daemon command: ${action}`)
 }
 
+async function prepStorage(mode: OutputMode): Promise<void> {
+  await configService.loadConfig()
+  const before = await daemonStatus()
+  const daemon = await ensureDaemon()
+  connectStore(daemon)
+  await reupStorage()
+  if (mode === 'human') {
+    info(`daemon: ${before.running ? 'using existing' : 'started'} (${daemon.url})`)
+    info('note: storage commands currently inspect rclone-backed storage; OpenList lifecycle/reauth support lands later.')
+  }
+}
+
+function printStorageList(mode: OutputMode): void {
+  const list = useStorageStore.getState().storageList
+  if (mode === 'json') {
+    printJson(list)
+    return
+  }
+  if (list.length === 0) {
+    printLines(['No rclone storage configured.', 'Run: netmount config doctor'])
+    return
+  }
+  printLines(
+    [
+      ['NAME', 'FRAMEWORK', 'TYPE', 'USED', 'TOTAL'].join('\t'),
+      ...list.map(storage =>
+        [
+          storage.name,
+          storage.framework,
+          storage.type,
+          fmtBytes(storage.space?.used),
+          fmtBytes(storage.space?.total),
+        ].join('\t')
+      ),
+    ]
+  )
+}
+
+async function printStorageInfo(name: string, mode: OutputMode): Promise<void> {
+  const storage = searchStorage(name)
+  if (!storage) fail(EXIT.CONFIG, `No storage named "${name}"`, 'List configured storages with: netmount storage list')
+
+  let params: Record<string, unknown> = {}
+  try {
+    params = (await getStorageParams(name)) as Record<string, unknown>
+  } catch {
+    params = {}
+  }
+  const safeParams = redactParams(params) as Record<string, unknown>
+
+  if (mode === 'json') {
+    printJson({
+      name: storage.name,
+      framework: storage.framework,
+      type: storage.type,
+      space: storage.space,
+      parameters: safeParams,
+    })
+    return
+  }
+
+  const lines = [
+    `name: ${storage.name}`,
+    `framework: ${storage.framework}`,
+    `type: ${storage.type}`,
+    `used: ${fmtBytes(storage.space?.used)}`,
+    `total: ${fmtBytes(storage.space?.total)}`,
+    `free: ${fmtBytes(storage.space?.free)}`,
+    'parameters: use --format json for redacted backend parameters',
+  ]
+  printLines(lines)
+}
+
+async function runStorage(args: string[], mode: OutputMode): Promise<void> {
+  const action = args[0] ?? 'list'
+  if (action === 'list' || action === 'ls') {
+    await prepStorage(mode)
+    printStorageList(mode)
+    return
+  }
+  if (action === 'info') {
+    const name = args[1]
+    if (!name) fail(EXIT.USAGE, 'storage info requires a name')
+    await prepStorage(mode)
+    await printStorageInfo(name, mode)
+    return
+  }
+  fail(EXIT.USAGE, `unknown storage command: ${action}`)
+}
+
 async function runDoctor(mode: OutputMode): Promise<void> {
   const [rclone, openlist] = await Promise.all([
     checkBinary(resolveRcloneBin(), ['version']),
@@ -161,11 +259,13 @@ async function runDoctor(mode: OutputMode): Promise<void> {
     `daemon: ${status.running ? 'running' : 'stopped'}`,
     `config: ${nmPaths.appConfig}`,
     `state: ${nmPaths.daemonState}`,
+    ...(rclone.ok ? [] : ['next: set NETMOUNT_RCLONE_BIN or put rclone on PATH']),
+    ...(openlist.ok ? [] : ['note: OpenList lifecycle/reauth commands require NETMOUNT_OPENLIST_BIN in a later CLI PR']),
   ])
 }
 
-async function main(): Promise<void> {
-  const parsed = parseArgs(process.argv.slice(2))
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const parsed = parseArgs(argv)
   const mode = resolveMode(parsed)
   const [scope, command, ...rest] = parsed.positionals
 
@@ -176,6 +276,10 @@ async function main(): Promise<void> {
 
   if (scope === 'daemon') {
     await runDaemon(command ? [command, ...rest] : [], mode)
+    return
+  }
+  if (scope === 'storage') {
+    await runStorage(command ? [command, ...rest] : [], mode)
     return
   }
   if (scope === 'config' && command === 'doctor') {
@@ -190,7 +294,18 @@ async function main(): Promise<void> {
   fail(EXIT.USAGE, `unknown command: ${parsed.positionals.join(' ')}`)
 }
 
-main().catch(error => {
+function isMainModule(): boolean {
+  const meta = import.meta as ImportMeta & { main?: boolean }
+  if (meta.main) return true
+  const argvPath = process.argv[1]
+  return Boolean(argvPath && import.meta.url === pathToFileURL(argvPath).href)
+}
+
+function handleCliError(error: unknown): void {
   if (error instanceof DaemonError) fail(EXIT.DAEMON, error.message, error.hint)
   fail(EXIT.GENERAL, error instanceof Error ? error.message : String(error))
-})
+}
+
+if (isMainModule()) {
+  main().catch(handleCliError)
+}

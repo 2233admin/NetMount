@@ -5,6 +5,8 @@ import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
+import { nmConfig } from '../src/services/ConfigService'
+import { useRcloneStore } from '../src/stores/useRcloneStore'
 
 const execFileAsync = promisify(execFile)
 
@@ -60,6 +62,17 @@ export function resolveRcloneBin(): string {
 
 export function publicDaemonState(s: DaemonState): PublicDaemonState {
   return { pid: s.pid, url: s.url, port: s.port }
+}
+
+export function connectStore(s: DaemonState): void {
+  useRcloneStore.getState().setEndpoint({
+    url: s.url,
+    isLocal: true,
+    auth: {},
+    localhost: { port: s.port },
+  })
+  nmConfig.framework.rclone.user = s.user
+  nmConfig.framework.rclone.password = s.pass
 }
 
 async function readState(): Promise<DaemonState | undefined> {
@@ -173,7 +186,7 @@ export async function ensureDaemon(): Promise<DaemonState> {
     if (spawnError) {
       throw new DaemonError(
         `failed to start rclone (${bin}): ${spawnError.message}`,
-        'Set NETMOUNT_RCLONE_BIN to the rclone binary path, or put rclone on PATH.'
+        'Run `netmount config doctor`, then set NETMOUNT_RCLONE_BIN to the rclone binary path or put rclone on PATH.'
       )
     }
     if (await ping(state)) {
@@ -185,7 +198,7 @@ export async function ensureDaemon(): Promise<DaemonState> {
 
   throw new DaemonError(
     `rclone rcd did not become ready on ${state.url}`,
-    `Check ${LOG_FILE}. If rclone is missing, set NETMOUNT_RCLONE_BIN.`
+    `Run \`netmount config doctor\`, check ${LOG_FILE}, and set NETMOUNT_RCLONE_BIN if rclone is missing.`
   )
 }
 
