@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { readFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname, basename } from 'node:path'
 import { Command } from 'commander'
 import { setAutoFreeze } from 'immer'
@@ -12,13 +12,12 @@ import { configService } from '../src/services/ConfigService'
 import { reupStorage } from '../src/services/storage/StorageManager'
 import { useStorageStore } from '../src/stores/storageStore'
 import { createStorage } from '../src/controller/storage/create'
-import { updateStorageInfoList, searchStorageInfo, storageInfoList } from '../src/controller/storage/allList'
 import {
-  getFileList,
-  mkDir,
-  delFile,
-  delDir,
-} from '../src/services/storage/FileManager'
+  updateStorageInfoList,
+  searchStorageInfo,
+  storageInfoList,
+} from '../src/controller/storage/allList'
+import { getFileList, mkDir, delFile, delDir } from '../src/services/storage/FileManager'
 import {
   convertStoragePath,
   delStorage,
@@ -33,10 +32,7 @@ import {
   mountStorage,
   unmountStorage,
 } from '../src/controller/storage/mount/mount'
-import type {
-  VfsOptions,
-  MountOptions,
-} from '../src/type/rclone/storage/mount/parameters'
+import type { VfsOptions, MountOptions } from '../src/type/rclone/storage/mount/parameters'
 import { taskRepository } from '../src/repositories/task/TaskRepository'
 import { saveTask, delTask } from '../src/controller/task/task'
 import type { TaskListItem } from '../src/type/config'
@@ -49,21 +45,8 @@ import {
   nmPaths,
   type DaemonState,
 } from './daemon'
-import {
-  ensureOpenlist,
-  stopOpenlistDaemon,
-  openlistStatus,
-} from './openlist'
-import {
-  EXIT,
-  resolveMode,
-  fail,
-  ok,
-  info,
-  fmtBytes,
-  printJson,
-  printTable,
-} from './output'
+import { ensureOpenlist, stopOpenlistDaemon, openlistStatus } from './openlist'
+import { EXIT, resolveMode, fail, ok, info, fmtBytes, printJson, printTable } from './output'
 
 // Shared store mutators (e.g. startOpenlist) assign directly into zustand/immer
 // state. immer auto-freezes produced state in dev (running .ts directly), which
@@ -110,7 +93,11 @@ async function prep(
     try {
       await ensureOpenlist()
     } catch (e) {
-      fail(EXIT.DAEMON, `Failed to start openlist: ${(e as Error).message}`, 'Set NETMOUNT_OPENLIST_BIN to the openlist binary path.')
+      fail(
+        EXIT.DAEMON,
+        `Failed to start openlist: ${(e as Error).message}`,
+        'Set NETMOUNT_OPENLIST_BIN to the openlist binary path.'
+      )
     }
   } else {
     const ol = await openlistStatus()
@@ -125,7 +112,11 @@ async function prep(
 }
 
 // Read a secret from --pass, --password-stdin, or an env var — never echoed.
-function resolveSecret(opts: { pass?: string; passwordStdin?: boolean; passwordEnv?: string }): string | undefined {
+function resolveSecret(opts: {
+  pass?: string
+  passwordStdin?: boolean
+  passwordEnv?: string
+}): string | undefined {
   if (opts.passwordStdin) return readFileSync(0, 'utf8').trim()
   if (opts.passwordEnv) return process.env[opts.passwordEnv]
   return opts.pass
@@ -239,7 +230,11 @@ const collect = (v: string, acc: string[]): string[] => {
 // Read an OAuth token JSON from --token, --token-stdin, or an env var. The token
 // is what `rclone authorize <type>` prints on a machine that HAS a browser; you
 // paste it here so a headless box can use the backend without an interactive flow.
-function resolveToken(opts: { token?: string; tokenStdin?: boolean; tokenEnv?: string }): string | undefined {
+function resolveToken(opts: {
+  token?: string
+  tokenStdin?: boolean
+  tokenEnv?: string
+}): string | undefined {
   if (opts.tokenStdin) return readFileSync(0, 'utf8').trim()
   if (opts.tokenEnv) return process.env[opts.tokenEnv]
   return opts.token
@@ -249,7 +244,11 @@ function resolveToken(opts: { token?: string; tokenStdin?: boolean; tokenEnv?: s
 // or an env var. Same stdin/env discipline as the OAuth token and password channels
 // so the credential stays out of shell history. Used by drivers whose auth is a
 // refresh_token (Baidu/Aliyundrive/Yandex/...).
-function resolveRefreshToken(opts: { refreshToken?: string; refreshTokenStdin?: boolean; refreshTokenEnv?: string }): string | undefined {
+function resolveRefreshToken(opts: {
+  refreshToken?: string
+  refreshTokenStdin?: boolean
+  refreshTokenEnv?: string
+}): string | undefined {
   if (opts.refreshTokenStdin) return readFileSync(0, 'utf8').trim()
   if (opts.refreshTokenEnv) return process.env[opts.refreshTokenEnv]
   return opts.refreshToken
@@ -265,16 +264,27 @@ function resolveRefreshToken(opts: { refreshToken?: string; refreshTokenStdin?: 
 function buildStorageParams(
   type: string,
   opts: {
-    url?: string; vendor?: string; user?: string
-    provider?: string; accessKey?: string; endpoint?: string; region?: string
-    host?: string; domain?: string; port?: string
-    clientId?: string; clientSecret?: string; option?: string[]
+    url?: string
+    vendor?: string
+    user?: string
+    provider?: string
+    accessKey?: string
+    endpoint?: string
+    region?: string
+    host?: string
+    domain?: string
+    port?: string
+    clientId?: string
+    clientSecret?: string
+    option?: string[]
   },
   secret?: string,
   token?: string
 ): Record<string, string> {
   const p: Record<string, string> = {}
-  const set = (k: string, v?: string) => { if (v) p[k] = v }
+  const set = (k: string, v?: string) => {
+    if (v) p[k] = v
+  }
   switch (type) {
     case 's3':
       set('provider', opts.provider ?? 'Other')
@@ -319,8 +329,13 @@ function buildStorageParams(
 function buildOpenlistParams(
   name: string,
   opts: {
-    mountPath?: string; cookie?: string; user?: string
-    accessToken?: string; clientId?: string; clientSecret?: string; option?: string[]
+    mountPath?: string
+    cookie?: string
+    user?: string
+    accessToken?: string
+    clientId?: string
+    clientSecret?: string
+    option?: string[]
   },
   secret?: string,
   refreshToken?: string,
@@ -367,7 +382,10 @@ addOutputOpts(
     .description('add a cloud storage — type is any rclone backend (run: storage providers)')
     .option('--url <url>', 'webdav endpoint URL (also accepted as s3 endpoint / smb host)')
     .option('--vendor <vendor>', 'webdav vendor (other|nextcloud|owncloud|...)', 'other')
-    .option('--user <user>', 'username (webdav/smb; openlist username+password drivers -> addition.username)')
+    .option(
+      '--user <user>',
+      'username (webdav/smb; openlist username+password drivers -> addition.username)'
+    )
     .option('--provider <provider>', 's3 provider (AWS|Minio|Aliyun|Cloudflare|Other)')
     .option('--access-key <id>', 's3 access key id')
     .option('--endpoint <url>', 's3 endpoint (S3-compatible / non-AWS)')
@@ -375,35 +393,71 @@ addOutputOpts(
     .option('--host <host>', 'smb host')
     .option('--domain <domain>', 'smb domain')
     .option('--port <port>', 'smb/s3 port')
-    .option('--pass <secret>', 'password / s3 secret-access-key / openlist driver password (prefer --password-stdin)')
+    .option(
+      '--pass <secret>',
+      'password / s3 secret-access-key / openlist driver password (prefer --password-stdin)'
+    )
     .option('--password-stdin', 'read the secret from stdin')
     .option('--password-env <var>', 'read the secret from the named env var')
-    .option('--token <json>', 'OAuth token JSON from `rclone authorize <type>` (prefer --token-stdin)')
+    .option(
+      '--token <json>',
+      'OAuth token JSON from `rclone authorize <type>` (prefer --token-stdin)'
+    )
     .option('--token-stdin', 'read the OAuth token JSON from stdin')
     .option('--token-env <var>', 'read the OAuth token JSON from the named env var')
     .option('--client-id <id>', 'OAuth custom client id (optional)')
     .option('--client-secret <secret>', 'OAuth custom client secret (optional)')
-    .option('--option <key=value>', 'set any raw backend param (repeatable) — escape hatch; for openlist drivers, addition.<k>=<v> targets the nested addition object', collect, [])
-    .option('--cookie <cookie>', 'openlist netdisk auth cookie (Quark/115/UC/...); maps to addition.cookie')
-    .option('--refresh-token <token>', 'openlist netdisk refresh_token (Baidu/Aliyundrive/Yandex/...); prefer --refresh-token-stdin')
+    .option(
+      '--option <key=value>',
+      'set any raw backend param (repeatable) — escape hatch; for openlist drivers, addition.<k>=<v> targets the nested addition object',
+      collect,
+      []
+    )
+    .option(
+      '--cookie <cookie>',
+      'openlist netdisk auth cookie (Quark/115/UC/...); maps to addition.cookie'
+    )
+    .option(
+      '--refresh-token <token>',
+      'openlist netdisk refresh_token (Baidu/Aliyundrive/Yandex/...); prefer --refresh-token-stdin'
+    )
     .option('--refresh-token-stdin', 'read the refresh_token from stdin')
     .option('--refresh-token-env <var>', 'read the refresh_token from the named env var')
-    .option('--access-token <token>', 'openlist netdisk access_token (e.g. 115 Open); maps to addition.access_token')
+    .option(
+      '--access-token <token>',
+      'openlist netdisk access_token (e.g. 115 Open); maps to addition.access_token'
+    )
     .option('--mount-path <path>', 'openlist mount path (default /<name>)')
 ).action(
   async (
     type: string,
     name: string,
     opts: CmdOpts & {
-      url?: string; vendor?: string; user?: string
-      provider?: string; accessKey?: string; endpoint?: string; region?: string
-      host?: string; domain?: string; port?: string
-      pass?: string; passwordStdin?: boolean; passwordEnv?: string
-      token?: string; tokenStdin?: boolean; tokenEnv?: string
-      refreshToken?: string; refreshTokenStdin?: boolean; refreshTokenEnv?: string
+      url?: string
+      vendor?: string
+      user?: string
+      provider?: string
+      accessKey?: string
+      endpoint?: string
+      region?: string
+      host?: string
+      domain?: string
+      port?: string
+      pass?: string
+      passwordStdin?: boolean
+      passwordEnv?: string
+      token?: string
+      tokenStdin?: boolean
+      tokenEnv?: string
+      refreshToken?: string
+      refreshTokenStdin?: boolean
+      refreshTokenEnv?: string
       accessToken?: string
-      clientId?: string; clientSecret?: string; option?: string[]
-      cookie?: string; mountPath?: string
+      clientId?: string
+      clientSecret?: string
+      option?: string[]
+      cookie?: string
+      mountPath?: string
     }
   ) => {
     const mode = resolveMode(opts)
@@ -429,7 +483,11 @@ addOutputOpts(
       const parameters = buildOpenlistParams(name, opts, secret, refreshToken, info)
       const created = await createStorage(name, type, parameters, {}, {})
       if (!created) {
-        fail(EXIT.CONFIG, `Failed to add openlist storage "${name}" (driver ${type})`, 'Check the driver name (run: netmount storage providers) and required addition.* params.')
+        fail(
+          EXIT.CONFIG,
+          `Failed to add openlist storage "${name}" (driver ${type})`,
+          'Check the driver name (run: netmount storage providers) and required addition.* params.'
+        )
       }
       if (mode === 'json') printJson({ added: name, type, framework })
       else ok(`storage "${name}" added (${type}, openlist)`)
@@ -442,7 +500,11 @@ addOutputOpts(
 
     const created = await createStorage(name, type, parameters, {}, { obscure: true })
     if (!created) {
-      fail(EXIT.CONFIG, `Failed to add storage "${name}" (type ${type})`, 'Check the credentials and that the type is a valid rclone backend (run: netmount storage providers).')
+      fail(
+        EXIT.CONFIG,
+        `Failed to add storage "${name}" (type ${type})`,
+        'Check the credentials and that the type is a valid rclone backend (run: netmount storage providers).'
+      )
     }
     if (mode === 'json') printJson({ added: name, type })
     else ok(`storage "${name}" added (${type})`)
@@ -452,14 +514,23 @@ addOutputOpts(
 // `storage providers` — discovery: list every rclone backend type, or show one
 // type's config fields (name/required/secret) so you know what a given cloud disk
 // needs without trial-and-error. Reads rclone RC /config/providers (static).
-type ProviderOption = { Name: string; Help?: string; Required?: boolean; IsPassword?: boolean; Advanced?: boolean }
+type ProviderOption = {
+  Name: string
+  Help?: string
+  Required?: boolean
+  IsPassword?: boolean
+  Advanced?: boolean
+}
 type Provider = { Name: string; Description?: string; Options?: ProviderOption[] }
 addOutputOpts(
   storage
     .command('providers [type]')
     .alias('types')
     .description("list backend types, or show one type's config options")
-    .option('--openlist', 'also bring openlist up and include its drivers (Quark/115/aliyundrive/...)')
+    .option(
+      '--openlist',
+      'also bring openlist up and include its drivers (Quark/115/aliyundrive/...)'
+    )
 ).action(async (type: string | undefined, opts: CmdOpts & { openlist?: boolean }) => {
   const mode = resolveMode(opts)
   // --openlist brings openlist up so its drivers appear in the catalog. Either
@@ -473,22 +544,30 @@ addOutputOpts(
     .filter(s => s.framework === 'openlist')
     .map(s => ({ Name: s.type, Description: 'openlist driver', framework: 'openlist' as const }))
   if (!type) {
-    const all = [
-      ...provs.map(p => ({ ...p, framework: 'rclone' as const })),
-      ...openlistTypes,
-    ]
+    const all = [...provs.map(p => ({ ...p, framework: 'rclone' as const })), ...openlistTypes]
     if (mode === 'json') {
-      printJson(all.map(p => ({ type: p.Name, framework: p.framework, description: p.Description })))
+      printJson(
+        all.map(p => ({ type: p.Name, framework: p.framework, description: p.Description }))
+      )
       return
     }
     printTable(
-      all.map(p => ({ TYPE: p.Name, FRAMEWORK: p.framework, DESCRIPTION: (p.Description ?? '').slice(0, 50) })),
+      all.map(p => ({
+        TYPE: p.Name,
+        FRAMEWORK: p.framework,
+        DESCRIPTION: (p.Description ?? '').slice(0, 50),
+      })),
       'No providers reported.'
     )
     return
   }
   const prov = provs.find(p => p.Name === type)
-  if (!prov) return fail(EXIT.USAGE, `unknown backend type "${type}"`, 'Run: netmount storage providers (to list all types)')
+  if (!prov)
+    return fail(
+      EXIT.USAGE,
+      `unknown backend type "${type}"`,
+      'Run: netmount storage providers (to list all types)'
+    )
   if (mode === 'json') {
     printJson(prov.Options ?? [])
     return
@@ -507,12 +586,19 @@ addOutputOpts(
 })
 
 addOutputOpts(
-  storage.command('info <name>').description('show one storage: type, space, config (secrets masked)')
+  storage
+    .command('info <name>')
+    .description('show one storage: type, space, config (secrets masked)')
 ).action(async (name: string, opts: CmdOpts) => {
   const mode = resolveMode(opts)
   await prep({ storages: true })
   const s = searchStorage(name)
-  if (!s) fail(EXIT.CONFIG, `No storage named "${name}"`, 'List configured storages with: netmount storage list')
+  if (!s)
+    fail(
+      EXIT.CONFIG,
+      `No storage named "${name}"`,
+      'List configured storages with: netmount storage list'
+    )
   let params: Record<string, unknown> = {}
   try {
     params = (await getStorageParams(name)) as Record<string, unknown>
@@ -544,13 +630,19 @@ addOutputOpts(
 // backend (unlike about/quota, which many drivers don't support). A dead
 // cookie / expired token / 429 surfaces here as a non-ok result with reason.
 addOutputOpts(
-  storage.command('test <name>').description('check a storage is reachable and its credentials are valid')
+  storage
+    .command('test <name>')
+    .description('check a storage is reachable and its credentials are valid')
 ).action(async (name: string, opts: CmdOpts) => {
   const mode = resolveMode(opts)
   await prep({ version: true, storages: true })
   const target = searchStorage(name)
   if (!target) {
-    fail(EXIT.USAGE, `no storage named "${name}"`, 'run `netmount storage list` to see configured storages')
+    fail(
+      EXIT.USAGE,
+      `no storage named "${name}"`,
+      'run `netmount storage list` to see configured storages'
+    )
   }
   let reachable = false
   let reason: string | null = null
@@ -577,12 +669,19 @@ addOutputOpts(
 })
 
 addOutputOpts(
-  storage.command('del <name>').alias('rm').description('delete a storage (also unmounts and clears its cache)')
+  storage
+    .command('del <name>')
+    .alias('rm')
+    .description('delete a storage (also unmounts and clears its cache)')
 ).action(async (name: string, opts: CmdOpts) => {
   const mode = resolveMode(opts)
   await prep({ storages: true })
   if (!searchStorage(name)) {
-    fail(EXIT.CONFIG, `No storage named "${name}"`, 'List configured storages with: netmount storage list')
+    fail(
+      EXIT.CONFIG,
+      `No storage named "${name}"`,
+      'List configured storages with: netmount storage list'
+    )
   }
   await delStorage(name)
   if (mode === 'json') printJson({ deleted: name })
@@ -614,9 +713,18 @@ addOutputOpts(
     const mode = resolveMode(opts)
     await prep({ storages: true })
     const s = searchStorage(name)
-    if (!s) fail(EXIT.CONFIG, `No storage named "${name}"`, 'List configured storages with: netmount storage list')
+    if (!s)
+      fail(
+        EXIT.CONFIG,
+        `No storage named "${name}"`,
+        'List configured storages with: netmount storage list'
+      )
     if (s.framework !== 'rclone') {
-      fail(EXIT.USAGE, `edit only supports rclone storages (${name} is ${s.framework})`, 'Re-create it with: netmount storage del + storage add')
+      fail(
+        EXIT.USAGE,
+        `edit only supports rclone storages (${name} is ${s.framework})`,
+        'Re-create it with: netmount storage del + storage add'
+      )
     }
     const pass = resolveSecret(opts)
     const parameters: Record<string, string> = {}
@@ -651,33 +759,47 @@ addOutputOpts(
     .option('--cache-mode <mode>', 'VFS cache mode: off | minimal | writes | full', 'writes')
     .option('--read-only', 'mount read-only')
     .option('--network-mode', 'mount as a network drive (Windows)')
-).action(async (storageName: string, mountpoint: string, opts: CmdOpts & { cacheMode?: string; readOnly?: boolean; networkMode?: boolean }) => {
-  const mode = resolveMode(opts)
-  const cacheMode = opts.cacheMode ?? 'writes'
-  const VFS_CACHE_MODES = ['off', 'minimal', 'writes', 'full']
-  if (!VFS_CACHE_MODES.includes(cacheMode)) {
-    fail(EXIT.USAGE, `invalid --cache-mode "${cacheMode}"`, `valid modes: ${VFS_CACHE_MODES.join(', ')}`)
+).action(
+  async (
+    storageName: string,
+    mountpoint: string,
+    opts: CmdOpts & { cacheMode?: string; readOnly?: boolean; networkMode?: boolean }
+  ) => {
+    const mode = resolveMode(opts)
+    const cacheMode = opts.cacheMode ?? 'writes'
+    const VFS_CACHE_MODES = ['off', 'minimal', 'writes', 'full']
+    if (!VFS_CACHE_MODES.includes(cacheMode)) {
+      fail(
+        EXIT.USAGE,
+        `invalid --cache-mode "${cacheMode}"`,
+        `valid modes: ${VFS_CACHE_MODES.join(', ')}`
+      )
+    }
+    await prep({ version: true, storages: true })
+    // Default to 'writes' (matching the GUI) so writes to remotes like webdav/s3
+    // that need a known content-length don't fail under the off cache mode.
+    const parameters = {
+      vfsOpt: { CacheMode: cacheMode, ...(opts.readOnly ? { ReadOnly: true } : {}) } as VfsOptions,
+      mountOpt: { ...(opts.networkMode ? { NetworkMode: true } : {}) } as MountOptions,
+    }
+    await addMountStorage(storageName, mountpoint, parameters, false)
+    const mounted = await mountStorage({
+      storageName,
+      mountPath: mountpoint,
+      parameters,
+      autoMount: false,
+    })
+    if (!mounted) {
+      fail(
+        EXIT.MOUNT,
+        `Failed to mount "${storageName}" at ${mountpoint}`,
+        'Ensure WinFsp (Windows) / FUSE is installed and the mountpoint is free.'
+      )
+    }
+    if (mode === 'json') printJson({ mounted: storageName, mountpoint })
+    else ok(`mounted "${storageName}" at ${mountpoint}`)
   }
-  await prep({ version: true, storages: true })
-  // Default to 'writes' (matching the GUI) so writes to remotes like webdav/s3
-  // that need a known content-length don't fail under the off cache mode.
-  const parameters = {
-    vfsOpt: { CacheMode: cacheMode, ...(opts.readOnly ? { ReadOnly: true } : {}) } as VfsOptions,
-    mountOpt: { ...(opts.networkMode ? { NetworkMode: true } : {}) } as MountOptions,
-  }
-  await addMountStorage(storageName, mountpoint, parameters, false)
-  const mounted = await mountStorage({
-    storageName,
-    mountPath: mountpoint,
-    parameters,
-    autoMount: false,
-  })
-  if (!mounted) {
-    fail(EXIT.MOUNT, `Failed to mount "${storageName}" at ${mountpoint}`, 'Ensure WinFsp (Windows) / FUSE is installed and the mountpoint is free.')
-  }
-  if (mode === 'json') printJson({ mounted: storageName, mountpoint })
-  else ok(`mounted "${storageName}" at ${mountpoint}`)
-})
+)
 
 addOutputOpts(
   program.command('umount <mountpoint>').alias('unmount').description('unmount a storage')
@@ -709,7 +831,11 @@ addOutputOpts(
   await prep({ storages: true })
   const list = await getFileList(storage, path || '/', opts.refresh)
   if (!list) {
-    fail(EXIT.NETWORK, `Failed to list ${storage}:${path}`, 'Check the storage name and that the path exists.')
+    fail(
+      EXIT.NETWORK,
+      `Failed to list ${storage}:${path}`,
+      'Check the storage name and that the path exists.'
+    )
   }
   if (mode === 'json') {
     printJson(list)
@@ -864,7 +990,8 @@ addOutputOpts(
     dstFs: localFs(absDir),
     dstRemote: name,
   })
-  if (mode === 'json') printJson({ downloaded: `${storage}:${path}`, to: localFs(resolve(absDir, name)) })
+  if (mode === 'json')
+    printJson({ downloaded: `${storage}:${path}`, to: localFs(resolve(absDir, name)) })
   else ok(`downloaded ${storage}:${path} -> ${resolve(absDir, name)}`)
 })
 
@@ -887,15 +1014,31 @@ const napSync = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms
 addOutputOpts(
   program
     .command('sync <src> <dst>')
-    .description('sync a directory between local and any storage (push/pull via the cloud); additive copy by default')
+    .description(
+      'sync a directory between local and any storage (push/pull via the cloud); additive copy by default. Multi-threaded by default — tuned for high-latency cross-border netdisk (~6x a single-stream mount copy).'
+    )
     .option('--move', 'move instead of copy (remove source after a verified transfer)')
     .option('--mirror', 'make dst identical to src, DELETING dst files not in src')
     .option('--checksum', 'compare by hash instead of size+modtime')
+    .option('--transfers <n>', 'parallel file transfers (default 8)', '8')
+    .option('--streams <n>', 'multi-thread streams per file over cutoff (default 4)', '4')
+    .option(
+      '--cutoff-mb <mb>',
+      'multi-thread cutoff in MB — larger files get split (default 16)',
+      '16'
+    )
 ).action(
   async (
     src: string,
     dst: string,
-    opts: CmdOpts & { move?: boolean; mirror?: boolean; checksum?: boolean }
+    opts: CmdOpts & {
+      move?: boolean
+      mirror?: boolean
+      checksum?: boolean
+      transfers?: string
+      streams?: string
+      cutoffMb?: string
+    }
   ) => {
     const mode = resolveMode(opts)
     if (opts.move && opts.mirror) fail(EXIT.USAGE, '--move and --mirror are mutually exclusive')
@@ -903,53 +1046,238 @@ addOutputOpts(
     const srcFs = resolveSide(src)
     const dstFs = resolveSide(dst)
     const endpoint = opts.move ? '/sync/move' : opts.mirror ? '/sync/sync' : '/sync/copy'
-    const body: Record<string, unknown> = { srcFs, dstFs }
-    if (opts.checksum) body._config = { CheckSum: true }
-
+    const body: Record<string, unknown> = { srcFs, dstFs, _config: syncConfig(opts) }
+    const res = await runTransfer(endpoint, body, mode, `${src} -> ${dst}`)
     if (mode === 'json') {
-      await rclone_api_post(endpoint, body) // blocks until the transfer finishes
       printJson({ synced: src, to: dst, op: endpoint.slice('/sync/'.length) })
       return
     }
-
-    // human: kick off async, then poll job + global stats for a live progress line
-    const started = (await rclone_api_post(endpoint, { ...body, _async: true })) as { jobid?: number }
-    const jobid = started?.jobid
-    if (jobid == null) {
-      ok(`synced ${src} -> ${dst}`)
-      return
-    }
-    let done = false
-    let final: { success?: boolean; error?: string; duration?: number } = {}
-    while (!done) {
-      await napSync(700)
-      const st = (await rclone_api_post('/core/stats', {})) as {
-        bytes?: number
-        totalBytes?: number
-        speed?: number
-      }
-      const tx = st?.bytes ?? 0
-      const total = st?.totalBytes ?? 0
-      const pct = total > 0 ? Math.floor((tx / total) * 100) : 0
-      process.stderr.write(`\r  ${fmtBytes(tx)} / ${fmtBytes(total)} (${pct}%) at ${fmtBytes(st?.speed ?? 0)}/s   `)
-      const js = (await rclone_api_post('/job/status', { jobid })) as {
-        finished?: boolean
-        success?: boolean
-        error?: string
-        duration?: number
-      }
-      if (js?.finished) {
-        done = true
-        final = js
-      }
-    }
-    process.stderr.write('\n')
-    if (final.success === false || final.error) {
-      fail(EXIT.NETWORK, `sync failed: ${final.error || 'unknown error'}`, 'Re-run to resume — already-transferred files are skipped.')
-    }
-    ok(`synced ${src} -> ${dst}${final.duration != null ? ` in ${final.duration.toFixed(1)}s` : ''}`)
+    ok(`synced ${src} -> ${dst}${res.duration != null ? ` in ${res.duration.toFixed(1)}s` : ''}`)
   }
 )
+
+// ---- shared transfer core (used by `sync` and `fleet`) ----
+
+// Build the rclone _config block that turns on multi-threaded, high-concurrency
+// transfer — the difference between a single-stream netdisk crawl and a fast
+// cross-border pull. Without this the rcd daemon defaults (Transfers 4,
+// MultiThreadCutoff 256M) leave our ~tens-of-MB lake files single-streamed.
+function syncConfig(opts: {
+  checksum?: boolean
+  transfers?: string
+  streams?: string
+  cutoffMb?: string
+}): Record<string, unknown> {
+  const pint = (v: string | undefined, d: number) =>
+    Math.max(1, Number.parseInt(v ?? String(d), 10) || d)
+  const cfg: Record<string, unknown> = {
+    Transfers: pint(opts.transfers, 8),
+    MultiThreadStreams: pint(opts.streams, 4),
+    MultiThreadCutoff: pint(opts.cutoffMb, 16) * 1024 * 1024,
+  }
+  if (opts.checksum) cfg.CheckSum = true
+  return cfg
+}
+
+type TransferFinal = { success?: boolean; error?: string; duration?: number }
+
+// Run one rclone /sync/* transfer. In json mode it blocks; in human mode it
+// kicks off async and prints a live progress line. Fails hard on error.
+async function runTransfer(
+  endpoint: string,
+  body: Record<string, unknown>,
+  mode: string,
+  label: string
+): Promise<TransferFinal> {
+  if (mode === 'json') {
+    await rclone_api_post(endpoint, body) // blocks until the transfer finishes
+    return {}
+  }
+  const started = (await rclone_api_post(endpoint, { ...body, _async: true })) as {
+    jobid?: number
+  }
+  const jobid = started?.jobid
+  if (jobid == null) return {}
+  let done = false
+  let final: TransferFinal = {}
+  while (!done) {
+    await napSync(700)
+    const st = (await rclone_api_post('/core/stats', {})) as {
+      bytes?: number
+      totalBytes?: number
+      speed?: number
+    }
+    const tx = st?.bytes ?? 0
+    const total = st?.totalBytes ?? 0
+    const pct = total > 0 ? Math.floor((tx / total) * 100) : 0
+    process.stderr.write(
+      `\r  ${label}  ${fmtBytes(tx)} / ${fmtBytes(total)} (${pct}%) at ${fmtBytes(st?.speed ?? 0)}/s   `
+    )
+    const js = (await rclone_api_post('/job/status', { jobid })) as TransferFinal & {
+      finished?: boolean
+    }
+    if (js?.finished) {
+      done = true
+      final = js
+    }
+  }
+  process.stderr.write('\n')
+  if (final.success === false || final.error) {
+    fail(
+      EXIT.NETWORK,
+      `transfer failed: ${final.error || 'unknown error'}`,
+      'Re-run to resume — already-transferred files are skipped.'
+    )
+  }
+  return final
+}
+
+// ---- fleet: cross-machine project data sync via a netdisk relay ----
+//
+// The capability the CLI was missing: move a project's machine-independent data
+// (raw lakes, exported parquet — NOT live DBs that hold per-machine state)
+// between fleet machines, routed through a netdisk so it stays fast across
+// high-latency / cross-border links. Run `fleet push <proj>` on the machine that
+// HAS the data, `fleet pull <proj>` on every machine that NEEDS it.
+type FleetProject = { remote: string; relay: string; paths: string[]; note?: string }
+type FleetManifest = { projects: Record<string, FleetProject> }
+
+const DEFAULT_FLEET: FleetManifest = {
+  projects: {
+    'k-atana': {
+      remote: '.netmount-openlist.',
+      relay: 'Quark_new/NetMount/fleet/k-atana',
+      paths: ['.lake_cache', 'data-export'],
+      note: 'machine-independent data only: PIT raw lake + market-data parquet export. NOT DATA/quant.duckdb (it holds per-machine paper_positions/trades/portfolio state). remote=.netmount-openlist. is the rclone→OpenList bridge; relay sits under the Quark_new OpenList storage.',
+    },
+  },
+}
+
+function fleetManifestPath(override?: string): string {
+  return override ? resolve(override) : resolve(resolveDataDir(), 'fleet.json')
+}
+
+function loadFleetManifest(override?: string): {
+  path: string
+  manifest: FleetManifest
+  seeded: boolean
+} {
+  const path = fleetManifestPath(override)
+  if (!existsSync(path)) {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(DEFAULT_FLEET, null, 2))
+    return { path, manifest: DEFAULT_FLEET, seeded: true }
+  }
+  const manifest = JSON.parse(readFileSync(path, 'utf8')) as FleetManifest
+  return { path, manifest, seeded: false }
+}
+
+const fleet = program
+  .command('fleet')
+  .description(
+    "sync a project's data across fleet machines through a netdisk relay (push on the source, pull on the rest)"
+  )
+
+addOutputOpts(
+  fleet
+    .command('list')
+    .alias('ls')
+    .description('list configured fleet projects (seeds a default manifest on first run)')
+    .option('--manifest <path>', 'use a specific manifest file')
+).action(async (opts: CmdOpts & { manifest?: string }) => {
+  const mode = resolveMode(opts)
+  const { path, manifest, seeded } = loadFleetManifest(opts.manifest)
+  if (seeded && mode === 'human') info(`seeded default manifest at ${path}`)
+  if (mode === 'json') {
+    printJson(manifest)
+    return
+  }
+  const rows = Object.entries(manifest.projects).map(([name, p]) => ({
+    PROJECT: name,
+    REMOTE: p.remote,
+    RELAY: p.relay,
+    PATHS: p.paths.join(', '),
+  }))
+  if (mode === 'plain') {
+    for (const r of rows) process.stdout.write(`${r.PROJECT}\t${r.REMOTE}:${r.RELAY}\n`)
+    return
+  }
+  printTable(rows, `No fleet projects. Edit ${path}`)
+})
+
+type FleetXferOpts = CmdOpts & {
+  root?: string
+  remote?: string
+  manifest?: string
+  mirror?: boolean
+  transfers?: string
+  streams?: string
+  cutoffMb?: string
+}
+
+function fleetAction(direction: 'push' | 'pull') {
+  return async (project: string, opts: FleetXferOpts) => {
+    const mode = resolveMode(opts)
+    const { manifest } = loadFleetManifest(opts.manifest)
+    const proj = manifest.projects[project]
+    if (!proj) {
+      fail(
+        EXIT.USAGE,
+        `unknown fleet project: ${project}`,
+        'Configure it in the manifest (see: netmount fleet list).'
+      )
+      return
+    }
+    const remote = opts.remote || proj.remote
+    const root = resolve(opts.root || process.cwd())
+    await prep({ storages: true, openlist: true })
+    const endpoint = opts.mirror ? '/sync/sync' : '/sync/copy'
+    const cfg = syncConfig(opts)
+    const results: { path: string; duration?: number }[] = []
+    for (const p of proj.paths) {
+      const local = resolve(root, p)
+      const remotePath = `${remote}:${proj.relay}/${p}`
+      const src = direction === 'push' ? local : remotePath
+      const dst = direction === 'push' ? remotePath : local
+      if (mode === 'human') info(`${direction} ${p}  (${src} -> ${dst})`)
+      const body = { srcFs: resolveSide(src), dstFs: resolveSide(dst), _config: cfg }
+      const res = await runTransfer(endpoint, body, mode, `${project}/${p}`)
+      results.push({ path: p, duration: res.duration })
+    }
+    if (mode === 'json') {
+      printJson({ project, direction, remote, relay: proj.relay, root, paths: results })
+    } else {
+      ok(`fleet ${direction} ${project}: ${proj.paths.length} path(s) via ${remote}:${proj.relay}`)
+    }
+  }
+}
+
+function addFleetXferOpts(cmd: Command): Command {
+  return cmd
+    .option('--root <dir>', 'local project root (default: current directory)')
+    .option('--remote <name>', 'override the netdisk storage name from the manifest')
+    .option('--manifest <path>', 'use a specific manifest file')
+    .option('--mirror', 'mirror instead of additive copy (DELETES extraneous files at the destination)')
+    .option('--transfers <n>', 'parallel file transfers (default 8)', '8')
+    .option('--streams <n>', 'multi-thread streams per file over cutoff (default 4)', '4')
+    .option('--cutoff-mb <mb>', 'multi-thread cutoff in MB — larger files get split (default 16)', '16')
+}
+
+addOutputOpts(
+  addFleetXferOpts(
+    fleet
+      .command('push <project>')
+      .description('upload a project’s data dirs to the netdisk relay (run on the machine that HAS the data)')
+  )
+).action(fleetAction('push'))
+
+addOutputOpts(
+  addFleetXferOpts(
+    fleet
+      .command('pull <project>')
+      .description('download a project’s data dirs from the netdisk relay (run on a machine that NEEDS the data)')
+  )
+).action(fleetAction('pull'))
 
 // ---- mounts ----
 const mounts = program.command('mounts').description('inspect active mounts')
@@ -959,28 +1287,29 @@ const mounts = program.command('mounts').description('inspect active mounts')
 // mounts — the GUI sidesteps it via its locally-tracked mount config. Rather than
 // patch upstream, read RC directly here, same as the cp/mv path-join workaround.
 type RcMountPoint = { Fs: string; MountPoint: string; MountedOn: string }
-addOutputOpts(
-  mounts.command('list').alias('ls').description('list active mount points')
-).action(async (opts: CmdOpts) => {
-  const mode = resolveMode(opts)
-  await prep()
-  const res = (await rclone_api_post('/mount/listmounts')) as { mountPoints?: RcMountPoint[] } | undefined
-  const list = res?.mountPoints ?? []
-  if (mode === 'json') {
-    printJson(
-      list.map(m => ({ storage: m.Fs, mountPoint: m.MountPoint, mountedOn: m.MountedOn }))
+addOutputOpts(mounts.command('list').alias('ls').description('list active mount points')).action(
+  async (opts: CmdOpts) => {
+    const mode = resolveMode(opts)
+    await prep()
+    const res = (await rclone_api_post('/mount/listmounts')) as
+      { mountPoints?: RcMountPoint[] } | undefined
+    const list = res?.mountPoints ?? []
+    if (mode === 'json') {
+      printJson(
+        list.map(m => ({ storage: m.Fs, mountPoint: m.MountPoint, mountedOn: m.MountedOn }))
+      )
+      return
+    }
+    if (mode === 'plain') {
+      for (const m of list) process.stdout.write(`${m.Fs}\t${m.MountPoint}\n`)
+      return
+    }
+    printTable(
+      list.map(m => ({ STORAGE: m.Fs, MOUNTPOINT: m.MountPoint, MOUNTED: m.MountedOn })),
+      'No active mounts. Mount one with: netmount mount <storage> <mountpoint>'
     )
-    return
   }
-  if (mode === 'plain') {
-    for (const m of list) process.stdout.write(`${m.Fs}\t${m.MountPoint}\n`)
-    return
-  }
-  printTable(
-    list.map(m => ({ STORAGE: m.Fs, MOUNTPOINT: m.MountPoint, MOUNTED: m.MountedOn })),
-    'No active mounts. Mount one with: netmount mount <storage> <mountpoint>'
-  )
-})
+)
 
 // ---- daemon ----
 const daemon = program.command('daemon').description('manage the rclone background daemon')
@@ -994,27 +1323,27 @@ addOutputOpts(daemon.command('start').description('start the rclone daemon')).ac
   }
 )
 
-addOutputOpts(daemon.command('status').description('show daemon status (rclone + openlist)')).action(
-  async (opts: CmdOpts) => {
-    const mode = resolveMode(opts)
-    const { running, state } = await daemonStatus()
-    const ol = await openlistStatus()
-    if (mode === 'json') {
-      printJson({
-        running,
-        pid: state?.pid,
-        url: state?.url,
-        openlist: { running: ol.running, url: ol.state?.url, port: ol.state?.port },
-      })
-    } else {
-      if (running && state) ok(`rclone daemon running (pid ${state.pid}) at ${state.url}`)
-      else info('rclone daemon not running')
-      if (ol.running && ol.state) ok(`openlist running at ${ol.state.url}`)
-      else info('openlist not running')
-      if (!running) process.exit(EXIT.DAEMON)
-    }
+addOutputOpts(
+  daemon.command('status').description('show daemon status (rclone + openlist)')
+).action(async (opts: CmdOpts) => {
+  const mode = resolveMode(opts)
+  const { running, state } = await daemonStatus()
+  const ol = await openlistStatus()
+  if (mode === 'json') {
+    printJson({
+      running,
+      pid: state?.pid,
+      url: state?.url,
+      openlist: { running: ol.running, url: ol.state?.url, port: ol.state?.port },
+    })
+  } else {
+    if (running && state) ok(`rclone daemon running (pid ${state.pid}) at ${state.url}`)
+    else info('rclone daemon not running')
+    if (ol.running && ol.state) ok(`openlist running at ${ol.state.url}`)
+    else info('openlist not running')
+    if (!running) process.exit(EXIT.DAEMON)
   }
-)
+})
 
 addOutputOpts(daemon.command('stop').description('stop the daemon (rclone + openlist)')).action(
   async (opts: CmdOpts) => {
@@ -1031,23 +1360,30 @@ addOutputOpts(daemon.command('stop').description('stop the daemon (rclone + open
   }
 )
 
-addOutputOpts(daemon.command('restart').description('stop then start the daemon (rclone + openlist if it was up)')).action(
-  async (opts: CmdOpts) => {
-    const mode = resolveMode(opts)
-    // Remember whether openlist was up, so we can bring it back.
-    const olWasUp = (await openlistStatus()).running
-    await stopOpenlistDaemon().catch(() => {})
-    await stopDaemon()
-    const state = await prep(olWasUp ? { openlist: true } : {})
-    const ol = await openlistStatus()
-    if (mode === 'json') {
-      printJson({ pid: state.pid, url: state.url, port: state.port, openlist: { running: ol.running, url: ol.state?.url } })
-    } else {
-      ok(`rclone daemon restarted (pid ${state.pid}) at ${state.url}`)
-      if (ol.running && ol.state) ok(`openlist restarted at ${ol.state.url}`)
-    }
+addOutputOpts(
+  daemon
+    .command('restart')
+    .description('stop then start the daemon (rclone + openlist if it was up)')
+).action(async (opts: CmdOpts) => {
+  const mode = resolveMode(opts)
+  // Remember whether openlist was up, so we can bring it back.
+  const olWasUp = (await openlistStatus()).running
+  await stopOpenlistDaemon().catch(() => {})
+  await stopDaemon()
+  const state = await prep(olWasUp ? { openlist: true } : {})
+  const ol = await openlistStatus()
+  if (mode === 'json') {
+    printJson({
+      pid: state.pid,
+      url: state.url,
+      port: state.port,
+      openlist: { running: ol.running, url: ol.state?.url },
+    })
+  } else {
+    ok(`rclone daemon restarted (pid ${state.pid}) at ${state.url}`)
+    if (ol.running && ol.state) ok(`openlist restarted at ${ol.state.url}`)
   }
-)
+})
 
 // ---- config ----
 const config = program.command('config').description('inspect CLI config and run health checks')
@@ -1075,82 +1411,84 @@ addOutputOpts(
   printJson(redactParams(configService.getConfig()))
 })
 
-addOutputOpts(
-  config.command('doctor').description('health-check the CLI environment')
-).action(async (opts: CmdOpts) => {
-  const mode = resolveMode(opts)
-  const checks: { check: string; status: 'PASS' | 'WARN' | 'FAIL'; detail: string }[] = []
+addOutputOpts(config.command('doctor').description('health-check the CLI environment')).action(
+  async (opts: CmdOpts) => {
+    const mode = resolveMode(opts)
+    const checks: { check: string; status: 'PASS' | 'WARN' | 'FAIL'; detail: string }[] = []
 
-  checks.push({
-    check: 'state dir',
-    status: existsSync(nmPaths.dir) ? 'PASS' : 'WARN',
-    detail: existsSync(nmPaths.dir) ? nmPaths.dir : `${nmPaths.dir} (created on first use)`,
-  })
-
-  checks.push({
-    check: 'app config',
-    status: existsSync(nmPaths.appConfig) ? 'PASS' : 'WARN',
-    detail: existsSync(nmPaths.appConfig) ? nmPaths.appConfig : 'none yet (defaults in use)',
-  })
-
-  const bin = process.env.NETMOUNT_RCLONE_BIN
-  if (bin) {
     checks.push({
-      check: 'rclone binary',
-      status: existsSync(bin) ? 'PASS' : 'FAIL',
-      detail: existsSync(bin) ? bin : `NETMOUNT_RCLONE_BIN points at a missing file: ${bin}`,
+      check: 'state dir',
+      status: existsSync(nmPaths.dir) ? 'PASS' : 'WARN',
+      detail: existsSync(nmPaths.dir) ? nmPaths.dir : `${nmPaths.dir} (created on first use)`,
     })
-  } else {
-    checks.push({
-      check: 'rclone binary',
-      status: 'WARN',
-      detail: 'NETMOUNT_RCLONE_BIN unset — relying on rclone being on PATH',
-    })
-  }
 
-  const { running, state } = await daemonStatus()
-  checks.push({
-    check: 'daemon',
-    status: running ? 'PASS' : 'WARN',
-    detail: running ? `running at ${state?.url}` : 'not running (auto-starts on first command)',
-  })
-  // Security: the rc must never be reachable off-host. The daemon binds
-  // 127.0.0.1 by construction; flag loudly if state ever shows otherwise.
-  if (state?.url) {
-    const local = state.url.includes('127.0.0.1') || state.url.includes('[::1]')
     checks.push({
-      check: 'rc bind',
-      status: local ? 'PASS' : 'FAIL',
-      detail: local ? 'bound to localhost' : `EXPOSED: ${state.url}`,
+      check: 'app config',
+      status: existsSync(nmPaths.appConfig) ? 'PASS' : 'WARN',
+      detail: existsSync(nmPaths.appConfig) ? nmPaths.appConfig : 'none yet (defaults in use)',
     })
-  }
 
-  if (process.platform === 'win32') {
-    const winfsp = await getRuntime().system.getWinFspInstallState()
+    const bin = process.env.NETMOUNT_RCLONE_BIN
+    if (bin) {
+      checks.push({
+        check: 'rclone binary',
+        status: existsSync(bin) ? 'PASS' : 'FAIL',
+        detail: existsSync(bin) ? bin : `NETMOUNT_RCLONE_BIN points at a missing file: ${bin}`,
+      })
+    } else {
+      checks.push({
+        check: 'rclone binary',
+        status: 'WARN',
+        detail: 'NETMOUNT_RCLONE_BIN unset — relying on rclone being on PATH',
+      })
+    }
+
+    const { running, state } = await daemonStatus()
     checks.push({
-      check: 'WinFsp',
-      status: winfsp ? 'PASS' : 'WARN',
-      detail: winfsp ? 'installed' : 'not found — mounting will fail until installed',
+      check: 'daemon',
+      status: running ? 'PASS' : 'WARN',
+      detail: running ? `running at ${state?.url}` : 'not running (auto-starts on first command)',
     })
-  }
+    // Security: the rc must never be reachable off-host. The daemon binds
+    // 127.0.0.1 by construction; flag loudly if state ever shows otherwise.
+    if (state?.url) {
+      const local = state.url.includes('127.0.0.1') || state.url.includes('[::1]')
+      checks.push({
+        check: 'rc bind',
+        status: local ? 'PASS' : 'FAIL',
+        detail: local ? 'bound to localhost' : `EXPOSED: ${state.url}`,
+      })
+    }
 
-  const failed = checks.some(c => c.status === 'FAIL')
-  if (mode === 'json') {
-    printJson(checks)
-  } else {
-    printTable(
-      checks.map(c => ({ CHECK: c.check, STATUS: c.status, DETAIL: c.detail })),
-      'no checks ran'
-    )
+    if (process.platform === 'win32') {
+      const winfsp = await getRuntime().system.getWinFspInstallState()
+      checks.push({
+        check: 'WinFsp',
+        status: winfsp ? 'PASS' : 'WARN',
+        detail: winfsp ? 'installed' : 'not found — mounting will fail until installed',
+      })
+    }
+
+    const failed = checks.some(c => c.status === 'FAIL')
+    if (mode === 'json') {
+      printJson(checks)
+    } else {
+      printTable(
+        checks.map(c => ({ CHECK: c.check, STATUS: c.status, DETAIL: c.detail })),
+        'no checks ran'
+      )
+    }
+    if (failed) process.exit(EXIT.CONFIG)
   }
-  if (failed) process.exit(EXIT.CONFIG)
-})
+)
 
 // ---- task ----------------------------------------------------------------
 // Saved scheduled transfer tasks live in NMConfig.task[]. The scheduler loop
 // runs in the GUI process; the CLI does NOT run schedulers, so this group is
 // read-only reporting of what the GUI has saved. Listing/inspecting only.
-const task = program.command('task').description('inspect saved scheduled tasks (read-only; scheduler runs in the GUI)')
+const task = program
+  .command('task')
+  .description('inspect saved scheduled tasks (read-only; scheduler runs in the GUI)')
 
 function loc(end: { storageName: string; path: string }): string {
   return `${end.storageName}:${end.path}`
@@ -1195,7 +1533,12 @@ addOutputOpts(task.command('status <name>').description('show one saved task in 
     resolveMode(opts)
     await configService.loadConfig()
     const t = (configService.getConfig().task ?? []).find(x => x.name === name)
-    if (!t) fail(EXIT.USAGE, `no saved task named "${name}"`, 'run `netmount task list` to see saved tasks')
+    if (!t)
+      fail(
+        EXIT.USAGE,
+        `no saved task named "${name}"`,
+        'run `netmount task list` to see saved tasks'
+      )
     printJson({
       name: t.name,
       type: t.taskType,
@@ -1212,29 +1555,31 @@ addOutputOpts(task.command('status <name>').description('show one saved task in 
 // Execute a saved task to completion via the shared task engine (same path the
 // GUI scheduler uses). Needs the daemon up so the underlying copy/move/sync RC
 // calls have a backend; returns the TaskResult so we can report + set exit code.
-addOutputOpts(task.command('run <name>').description('run a saved task now (to completion)')).action(
-  async (name: string, opts: CmdOpts) => {
-    const mode = resolveMode(opts)
-    await configService.loadConfig()
-    const t = (configService.getConfig().task ?? []).find(x => x.name === name)
-    if (!t) fail(EXIT.USAGE, `no saved task named "${name}"`, 'run `netmount task list` to see saved tasks')
-    // storages:true populates the storage list so convertStoragePath() can resolve
-    // the task's "storage:" remotes — without it the copy/sync layer throws
-    // "Invalid source or destination path".
-    await prep({ storages: true })
-    const result = await taskRepository.executeTask(name)
-    if (mode === 'json') {
-      printJson({ name, result })
-    } else {
-      const summary =
-        `task "${name}" ${result.success ? 'succeeded' : 'failed'} ` +
-        `(${result.errors} error${result.errors === 1 ? '' : 's'}, ${result.duration}ms)`
-      if (result.success) ok(summary)
-      else info(summary + (result.errorMessages?.length ? ` -- ${result.errorMessages.join('; ')}` : ''))
-    }
-    if (!result.success) process.exit(EXIT.GENERAL)
+addOutputOpts(
+  task.command('run <name>').description('run a saved task now (to completion)')
+).action(async (name: string, opts: CmdOpts) => {
+  const mode = resolveMode(opts)
+  await configService.loadConfig()
+  const t = (configService.getConfig().task ?? []).find(x => x.name === name)
+  if (!t)
+    fail(EXIT.USAGE, `no saved task named "${name}"`, 'run `netmount task list` to see saved tasks')
+  // storages:true populates the storage list so convertStoragePath() can resolve
+  // the task's "storage:" remotes — without it the copy/sync layer throws
+  // "Invalid source or destination path".
+  await prep({ storages: true })
+  const result = await taskRepository.executeTask(name)
+  if (mode === 'json') {
+    printJson({ name, result })
+  } else {
+    const summary =
+      `task "${name}" ${result.success ? 'succeeded' : 'failed'} ` +
+      `(${result.errors} error${result.errors === 1 ? '' : 's'}, ${result.duration}ms)`
+    if (result.success) ok(summary)
+    else
+      info(summary + (result.errorMessages?.length ? ` -- ${result.errorMessages.join('; ')}` : ''))
   }
-)
+  if (!result.success) process.exit(EXIT.GENERAL)
+})
 
 // Delete a saved task from NMConfig.task[]. We call delTask() for its scheduler
 // side effect (cancel any pending timer), then remove the entry in place and
@@ -1249,7 +1594,12 @@ addOutputOpts(task.command('del <name>').alias('rm').description('delete a saved
     await configService.loadConfig()
     const tasks = configService.getConfig().task ?? []
     const idx = tasks.findIndex(x => x.name === name)
-    if (idx < 0) fail(EXIT.USAGE, `no saved task named "${name}"`, 'run `netmount task list` to see saved tasks')
+    if (idx < 0)
+      fail(
+        EXIT.USAGE,
+        `no saved task named "${name}"`,
+        'run `netmount task list` to see saved tasks'
+      )
     await delTask(name) // cancel any scheduler timer (no-op for unscheduled tasks)
     tasks.splice(idx, 1) // mutate in place so saveConfig() actually persists
     await configService.saveConfig()
@@ -1277,69 +1627,83 @@ addOutputOpts(
       '\nNote: the CLI does NOT run a scheduler. time/interval tasks will not auto-fire here;\n' +
         'they need the GUI or a resident daemon. Use `netmount task run <name>` to execute now.'
     )
-).action(async (name: string, opts: CmdOpts & { type?: string; source?: string; target?: string; mode?: string }) => {
-  const mode = resolveMode(opts)
-  await configService.loadConfig()
+).action(
+  async (
+    name: string,
+    opts: CmdOpts & { type?: string; source?: string; target?: string; mode?: string }
+  ) => {
+    const mode = resolveMode(opts)
+    await configService.loadConfig()
 
-  if (!opts.type) fail(EXIT.USAGE, 'missing --type', `--type must be one of: ${TASK_TYPES.join(', ')}`)
-  if (!TASK_TYPES.includes(opts.type!)) {
-    fail(EXIT.USAGE, `invalid --type "${opts.type}"`, `valid types: ${TASK_TYPES.join(', ')}`)
-  }
-  const runMode = opts.mode ?? 'disposable'
-  if (!TASK_MODES.includes(runMode)) {
-    fail(EXIT.USAGE, `invalid --mode "${runMode}"`, `valid modes: ${TASK_MODES.join(', ')}`)
-  }
-  if (!opts.source) fail(EXIT.USAGE, 'missing --source', 'pass --source <storage:path>')
-  const needTarget = opts.type !== 'delete'
-  if (needTarget && !opts.target) {
-    fail(EXIT.USAGE, 'missing --target', `--type ${opts.type} requires --target <storage:path>`)
-  }
+    if (!opts.type)
+      fail(EXIT.USAGE, 'missing --type', `--type must be one of: ${TASK_TYPES.join(', ')}`)
+    if (!TASK_TYPES.includes(opts.type!)) {
+      fail(EXIT.USAGE, `invalid --type "${opts.type}"`, `valid types: ${TASK_TYPES.join(', ')}`)
+    }
+    const runMode = opts.mode ?? 'disposable'
+    if (!TASK_MODES.includes(runMode)) {
+      fail(EXIT.USAGE, `invalid --mode "${runMode}"`, `valid modes: ${TASK_MODES.join(', ')}`)
+    }
+    if (!opts.source) fail(EXIT.USAGE, 'missing --source', 'pass --source <storage:path>')
+    const needTarget = opts.type !== 'delete'
+    if (needTarget && !opts.target) {
+      fail(EXIT.USAGE, 'missing --target', `--type ${opts.type} requires --target <storage:path>`)
+    }
 
-  // Split storage:path on the FIRST ":" only (paths may contain colons).
-  const src = parseRemote(opts.source!)
-  const tgt = opts.target ? parseRemote(opts.target) : { storage: '', path: '' }
+    // Split storage:path on the FIRST ":" only (paths may contain colons).
+    const src = parseRemote(opts.source!)
+    const tgt = opts.target ? parseRemote(opts.target) : { storage: '', path: '' }
 
-  // Validate referenced storages exist so the task isn't a dangling reference.
-  // searchStorage() reads the loaded storage list; populate it first via prep().
-  await prep({ storages: true })
-  if (!searchStorage(src.storage)) {
-    fail(EXIT.USAGE, `unknown source storage "${src.storage}"`, 'run `netmount storage list` to see configured storages')
-  }
-  if (opts.target && !searchStorage(tgt.storage)) {
-    fail(EXIT.USAGE, `unknown target storage "${tgt.storage}"`, 'run `netmount storage list` to see configured storages')
-  }
+    // Validate referenced storages exist so the task isn't a dangling reference.
+    // searchStorage() reads the loaded storage list; populate it first via prep().
+    await prep({ storages: true })
+    if (!searchStorage(src.storage)) {
+      fail(
+        EXIT.USAGE,
+        `unknown source storage "${src.storage}"`,
+        'run `netmount storage list` to see configured storages'
+      )
+    }
+    if (opts.target && !searchStorage(tgt.storage)) {
+      fail(
+        EXIT.USAGE,
+        `unknown target storage "${tgt.storage}"`,
+        'run `netmount storage list` to see configured storages'
+      )
+    }
 
-  const taskItem: TaskListItem = {
-    name,
-    taskType: opts.type!,
-    source: { storageName: src.storage, path: src.path },
-    target: { storageName: tgt.storage, path: tgt.path },
-    enable: true,
-    run: { mode: runMode, time: { intervalDays: 0, h: 0, m: 0, s: 0 } },
-    runInfo: {},
-  }
-  await saveTask(taskItem)
-
-  const timed = runMode === 'time' || runMode === 'interval'
-  const note = timed
-    ? "timed tasks need the GUI or a resident daemon to fire; use 'netmount task run <name>' to run now"
-    : "use 'netmount task run <name>' to execute"
-  if (mode === 'json') {
-    printJson({
-      created: true,
+    const taskItem: TaskListItem = {
       name,
-      type: opts.type,
-      mode: runMode,
-      source: loc(taskItem.source),
-      target: loc(taskItem.target),
-      scheduled: false,
-      note,
-    })
-  } else {
-    ok(`created task ${name} (${opts.type}, ${runMode})`)
-    info(note)
+      taskType: opts.type!,
+      source: { storageName: src.storage, path: src.path },
+      target: { storageName: tgt.storage, path: tgt.path },
+      enable: true,
+      run: { mode: runMode, time: { intervalDays: 0, h: 0, m: 0, s: 0 } },
+      runInfo: {},
+    }
+    await saveTask(taskItem)
+
+    const timed = runMode === 'time' || runMode === 'interval'
+    const note = timed
+      ? "timed tasks need the GUI or a resident daemon to fire; use 'netmount task run <name>' to run now"
+      : "use 'netmount task run <name>' to execute"
+    if (mode === 'json') {
+      printJson({
+        created: true,
+        name,
+        type: opts.type,
+        mode: runMode,
+        source: loc(taskItem.source),
+        target: loc(taskItem.target),
+        scheduled: false,
+        note,
+      })
+    } else {
+      ok(`created task ${name} (${opts.type}, ${runMode})`)
+      info(note)
+    }
   }
-})
+)
 
 // ---- stats ---------------------------------------------------------------
 // Live transfer stats from the daemon's /core/stats, via the shared controller.
