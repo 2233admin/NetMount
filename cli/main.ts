@@ -1027,6 +1027,12 @@ addOutputOpts(
       'multi-thread cutoff in MB — larger files get split (default 16)',
       '16'
     )
+    .option(
+      '--exclude <pattern>',
+      'skip paths matching this glob; repeatable (e.g. --exclude quant.duckdb)',
+      collect,
+      [] as string[]
+    )
 ).action(
   async (
     src: string,
@@ -1038,6 +1044,7 @@ addOutputOpts(
       transfers?: string
       streams?: string
       cutoffMb?: string
+      exclude?: string[]
     }
   ) => {
     const mode = resolveMode(opts)
@@ -1047,6 +1054,7 @@ addOutputOpts(
     const dstFs = resolveSide(dst)
     const endpoint = opts.move ? '/sync/move' : opts.mirror ? '/sync/sync' : '/sync/copy'
     const body: Record<string, unknown> = { srcFs, dstFs, _config: syncConfig(opts) }
+    if (opts.exclude?.length) body._filter = { ExcludeRule: opts.exclude }
     const res = await runTransfer(endpoint, body, mode, `${src} -> ${dst}`)
     if (mode === 'json') {
       printJson({ synced: src, to: dst, op: endpoint.slice('/sync/'.length) })
@@ -1139,7 +1147,7 @@ async function runTransfer(
 // between fleet machines, routed through a netdisk so it stays fast across
 // high-latency / cross-border links. Run `fleet push <proj>` on the machine that
 // HAS the data, `fleet pull <proj>` on every machine that NEEDS it.
-type FleetProject = { remote: string; relay: string; paths: string[]; note?: string }
+type FleetProject = { remote: string; relay: string; paths: string[]; exclude?: string[]; note?: string }
 type FleetManifest = { projects: Record<string, FleetProject> }
 
 const DEFAULT_FLEET: FleetManifest = {
@@ -1147,8 +1155,9 @@ const DEFAULT_FLEET: FleetManifest = {
     'k-atana': {
       remote: '.netmount-openlist.',
       relay: 'Quark_new/NetMount/fleet/k-atana',
-      paths: ['.lake_cache', 'data-export'],
-      note: 'machine-independent data only: PIT raw lake + market-data parquet export. NOT DATA/quant.duckdb (it holds per-machine paper_positions/trades/portfolio state). remote=.netmount-openlist. is the rclone→OpenList bridge; relay sits under the Quark_new OpenList storage.',
+      paths: ['.lake_cache', 'data'],
+      exclude: ['quant.duckdb'],
+      note: 'machine-independent data: the PIT lakes + the data/ tree. quant.duckdb is EXCLUDED — it carries per-machine paper_positions/trades/portfolio state; pull it to a staging copy and INSERT OR REPLACE only its market tables into the local DB. remote=.netmount-openlist. is the rclone→OpenList bridge.',
     },
   },
 }
@@ -1213,6 +1222,7 @@ type FleetXferOpts = CmdOpts & {
   transfers?: string
   streams?: string
   cutoffMb?: string
+  exclude?: string[]
 }
 
 function fleetAction(direction: 'push' | 'pull') {
@@ -1233,6 +1243,7 @@ function fleetAction(direction: 'push' | 'pull') {
     await prep({ storages: true, openlist: true })
     const endpoint = opts.mirror ? '/sync/sync' : '/sync/copy'
     const cfg = syncConfig(opts)
+    const excludes = [...(proj.exclude ?? []), ...(opts.exclude ?? [])]
     const results: { path: string; duration?: number }[] = []
     for (const p of proj.paths) {
       const local = resolve(root, p)
@@ -1240,7 +1251,12 @@ function fleetAction(direction: 'push' | 'pull') {
       const src = direction === 'push' ? local : remotePath
       const dst = direction === 'push' ? remotePath : local
       if (mode === 'human') info(`${direction} ${p}  (${src} -> ${dst})`)
-      const body = { srcFs: resolveSide(src), dstFs: resolveSide(dst), _config: cfg }
+      const body: Record<string, unknown> = {
+        srcFs: resolveSide(src),
+        dstFs: resolveSide(dst),
+        _config: cfg,
+      }
+      if (excludes.length) body._filter = { ExcludeRule: excludes }
       const res = await runTransfer(endpoint, body, mode, `${project}/${p}`)
       results.push({ path: p, duration: res.duration })
     }
@@ -1257,17 +1273,32 @@ function addFleetXferOpts(cmd: Command): Command {
     .option('--root <dir>', 'local project root (default: current directory)')
     .option('--remote <name>', 'override the netdisk storage name from the manifest')
     .option('--manifest <path>', 'use a specific manifest file')
-    .option('--mirror', 'mirror instead of additive copy (DELETES extraneous files at the destination)')
+    .option(
+      '--mirror',
+      'mirror instead of additive copy (DELETES extraneous files at the destination)'
+    )
+    .option(
+      '--exclude <pattern>',
+      'skip paths matching this glob; repeatable (adds to the project exclude)',
+      collect,
+      [] as string[]
+    )
     .option('--transfers <n>', 'parallel file transfers (default 8)', '8')
     .option('--streams <n>', 'multi-thread streams per file over cutoff (default 4)', '4')
-    .option('--cutoff-mb <mb>', 'multi-thread cutoff in MB — larger files get split (default 16)', '16')
+    .option(
+      '--cutoff-mb <mb>',
+      'multi-thread cutoff in MB — larger files get split (default 16)',
+      '16'
+    )
 }
 
 addOutputOpts(
   addFleetXferOpts(
     fleet
       .command('push <project>')
-      .description('upload a project’s data dirs to the netdisk relay (run on the machine that HAS the data)')
+      .description(
+        'upload a project’s data dirs to the netdisk relay (run on the machine that HAS the data)'
+      )
   )
 ).action(fleetAction('push'))
 
@@ -1275,7 +1306,9 @@ addOutputOpts(
   addFleetXferOpts(
     fleet
       .command('pull <project>')
-      .description('download a project’s data dirs from the netdisk relay (run on a machine that NEEDS the data)')
+      .description(
+        'download a project’s data dirs from the netdisk relay (run on a machine that NEEDS the data)'
+      )
   )
 ).action(fleetAction('pull'))
 
