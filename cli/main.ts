@@ -1147,7 +1147,13 @@ async function runTransfer(
 // between fleet machines, routed through a netdisk so it stays fast across
 // high-latency / cross-border links. Run `fleet push <proj>` on the machine that
 // HAS the data, `fleet pull <proj>` on every machine that NEEDS it.
-type FleetProject = { remote: string; relay: string; paths: string[]; exclude?: string[]; note?: string }
+type FleetProject = {
+  remote: string
+  relay: string
+  paths: string[]
+  exclude?: string[]
+  note?: string
+}
 type FleetManifest = { projects: Record<string, FleetProject> }
 
 const DEFAULT_FLEET: FleetManifest = {
